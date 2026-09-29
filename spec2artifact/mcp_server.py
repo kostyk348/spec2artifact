@@ -42,21 +42,43 @@ def main() -> None:
             req = json.loads(line)
         except json.JSONDecodeError:
             continue
-        rid, method = req.get("id"), req.get("method")
-        if method == "tools/list":
-            res = {"tools": TOOLS}
-        elif method == "tools/call":
-            p = req.get("params", {})
-            try:
-                res = {"content": [{"type": "text", "text": json.dumps(handle(p.get("name"), p.get("arguments", {})))}]}
-            except Exception as e:  # noqa: BLE001
-                res = {"content": [{"type": "text", "text": json.dumps({"error": str(e)})}], "isError": True}
-        elif method == "initialize":
-            res = {"protocolVersion": "2024-11-05", "serverInfo": {"name": "spec2artifact", "version": "0.1.0"}}
-        else:
-            res = {}
-        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": res}) + "\n")
-        sys.stdout.flush()
+        try:
+            rid = req.get("id")
+            method = req.get("method")
+
+            # JSON-RPC 2.0: a NOTIFICATION (no id) must NEVER be answered.
+            if rid is None:
+                continue
+
+            if method == "initialize":
+                pv = (req.get("params") or {}).get("protocolVersion", "2024-11-05")
+                res = {"protocolVersion": pv,
+                       "capabilities": {"tools": {"listChanged": False}},
+                       "serverInfo": {"name": "spec2artifact", "version": "0.1.0"}}
+            elif method == "tools/list":
+                res = {"tools": TOOLS}
+            elif method == "tools/call":
+                p = req.get("params", {})
+                try:
+                    res = {"content": [{"type": "text",
+                                        "text": json.dumps(handle(p.get("name"), p.get("arguments", {})))}]}
+                except Exception as e:  # noqa: BLE001
+                    res = {"content": [{"type": "text", "text": json.dumps({"error": str(e)})}], "isError": True}
+            elif method == "ping":
+                res = {}
+            elif method in ("resources/list", "prompts/list", "resources/templates/list"):
+                key = ("resources" if "resources" in method else "prompts")
+                res = {key: []}
+            else:
+                out = {"jsonrpc": "2.0", "id": rid,
+                       "error": {"code": -32601, "message": f"method not found: {method}"}}
+                sys.stdout.write(json.dumps(out) + "\n"); sys.stdout.flush()
+                continue
+
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": rid, "result": res}) + "\n")
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001 -- never die on one bad message
+            continue
 
 
 if __name__ == "__main__":
