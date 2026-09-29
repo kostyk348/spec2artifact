@@ -1,0 +1,16 @@
+{
+ "kind": "records",
+ "n": 8,
+ "seed": 42,
+ "format": "jsonl",
+ "fields": ["id", "name", "category", "price"],
+ "categories": ["tools", "toys", "books", "food"],
+ "pools": {
+  "tools": ["Hammer", "Wrench", "Drill"],
+  "toys": ["Robot", "Kite", "Puzzle"],
+  "books": ["Atlas", "Novel", "Guide"],
+  "food": ["Bread", "Honey", "Coffee"]
+ },
+ "price_range": [1, 999],
+ "decimals": 2
+}

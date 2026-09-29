@@ -1,0 +1,9 @@
+{
+ "kind": "report",
+ "title": "spec2artifact",
+ "sections": [
+  {"heading": "Idea", "bullets": ["the LLM writes only a small spec", "the algebra renders the artifact"]},
+  {"heading": "Why", "bullets": ["fewer tokens", "lower latency", "exact output"]}
+ ],
+ "footer": "generated from a spec, 0 LLM tokens for the body"
+}
