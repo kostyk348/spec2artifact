@@ -148,3 +148,40 @@ def _dataset(spec: dict) -> str:
         w.writeheader(); [w.writerow(r) for r in rows]
         return buf.getvalue().rstrip("\n")
     return "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)
+
+
+# ------------------------------------------------------------------ prose ----
+# Free prose assembled from a plan. Honest scope: this is TEMPLATE NLG -- it renders the spec's
+# claims into readable sentences with tone-specific connectives. It never invents a fact; the
+# content is exactly what the spec supplies.
+_TONES: dict[str, dict] = {
+    "neutral": {"lead": ["{t} is worth a moment.", "On {t}, a few things stand out.", "Consider {t}."],
+                "join": ["Also,", "Moreover,", "In addition,", "Beyond that,"],
+                "close": ["That is the gist.", "This is the core of it.", "So it stands."]},
+    "formal": {"lead": ["The matter of {t} warrants attention.", "With respect to {t}, several observations apply."],
+               "join": ["Furthermore,", "In addition,", "Consequently,"],
+               "close": ["This concludes the point.", "Such is the position."]},
+    "casual": {"lead": ["So, {t} -- here's the thing.", "About {t}:", "Let's talk {t}."],
+               "join": ["Plus,", "And,", "Also,"],
+               "close": ["Anyway, that's it.", "That's the deal."]},
+}
+
+
+@renderer("prose")
+def _prose(spec: dict) -> str:
+    rng = random.Random(spec.get("seed", 0))
+    tone = _TONES.get(spec.get("tone", "neutral"), _TONES["neutral"])
+    out: list[str] = []
+    if spec.get("title"):
+        out += [f"# {spec['title']}", ""]
+    for p in spec.get("paragraphs", []):
+        sents = [rng.choice(tone["lead"]).format(t=p.get("topic", "it"))]
+        for i, pt in enumerate(p.get("points", [])):
+            pre = (rng.choice(tone["join"]) + " ") if i > 0 else ""
+            sents.append(pre + pt.rstrip(".") + ".")
+        if rng.random() < 0.6:
+            sents.append(rng.choice(tone["close"]))
+        out += [" ".join(sents), ""]
+    if spec.get("footer"):
+        out += ["---", spec["footer"]]
+    return "\n".join(out).rstrip() + "\n"

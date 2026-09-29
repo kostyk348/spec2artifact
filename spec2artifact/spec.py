@@ -49,6 +49,12 @@ KINDS: dict[str, dict] = {
         "skeleton": {"kind": "dataset", "n": 200, "seed": 42, "alphabet": ["a", "b", "c"],
                      "length": 12, "rule": {"type": "mod", "k": 3}, "format": "jsonl"},
     },
+    "prose": {                        # free prose assembled from a compact plan
+        "desc": "readable prose from a plan (topic + points per paragraph); template NLG",
+        "skeleton": {"kind": "prose", "title": "<title>", "tone": "neutral", "seed": 42,
+                     "paragraphs": [{"topic": "<topic>", "points": ["<claim 1>", "<claim 2>"]}],
+                     "footer": ""},
+    },
 }
 
 
@@ -98,4 +104,13 @@ def validate(spec: dict) -> list[str]:
             errs.append("dataset.alphabet must be a non-empty list")
         if not isinstance(spec.get("length"), int) or spec["length"] < 1:
             errs.append("dataset.length must be a positive int")
+    if kind == "prose":
+        if spec.get("tone", "neutral") not in ("neutral", "formal", "casual"):
+            errs.append("prose.tone must be neutral|formal|casual")
+        if not isinstance(spec.get("paragraphs"), list):
+            errs.append("prose.paragraphs must be a list")
+        else:
+            for p in spec["paragraphs"]:
+                if not isinstance(p.get("points"), list):
+                    errs.append("prose paragraph needs a points list")
     return errs

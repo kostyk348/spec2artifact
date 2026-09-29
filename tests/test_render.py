@@ -50,6 +50,22 @@ def test_table_and_code():
     assert "def f(a):" in out and '"""d"""' in out
 
 
+def test_dataset_and_prose():
+    d = S.spec_template("dataset")
+    d["n"] = 40; d["rule"] = {"type": "mod", "k": 3}; d["alphabet"] = ["a", "b"]
+    rows = [json.loads(l) for l in render.render(d).splitlines()]
+    al = d["alphabet"]
+    assert len(rows) == 40
+    assert all(sum(al.index(c) for c in r["sequence"]) % 3 == r["target"] for r in rows)
+    assert render.render(d) == render.render(d)                 # deterministic
+    p = S.spec_template("prose")
+    p["title"] = "T"; p["tone"] = "formal"
+    p["paragraphs"] = [{"topic": "memory", "points": ["it is a hash chain", "it is append-only"]}]
+    out = render.render(p)
+    assert "# T" in out and "memory" in out and "hash chain" in out
+    assert S.validate(p) == [] and S.validate({"kind": "prose"}) != []
+
+
 def test_validation_rejects_bad():
     assert S.validate({"kind": "nope"})
     assert S.validate({"kind": "records", "n": -1})
