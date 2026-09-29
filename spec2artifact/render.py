@@ -119,3 +119,32 @@ def _list(spec: dict) -> str:
     for i in spec.get("items", []):
         out.append(f"- [{'x' if i in done else ' '}] {i}")
     return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------------- dataset ----
+@renderer("dataset")
+def _dataset(spec: dict) -> str:
+    """n (sequence, target) pairs for a KNOWN rule -- an exact benchmark for algebraic learners."""
+    rng = random.Random(spec.get("seed", 0))
+    alpha = spec["alphabet"]; L = spec["length"]; rule = spec.get("rule", {})
+    t, k = rule.get("type", "mod"), rule.get("k", 2)
+    rows = []
+    for i in range(1, spec["n"] + 1):
+        seq = [rng.choice(alpha) for _ in range(L)]
+        if t == "parity":
+            y = sum(alpha.index(c) for c in seq) % 2
+        elif t == "mod":
+            y = sum(alpha.index(c) for c in seq) % k
+        elif t == "contains":
+            y = int(rule.get("sym", alpha[0]) in seq)
+        else:                                   # count of the first symbol, mod k
+            y = sum(c == alpha[0] for c in seq) % k
+        rows.append({"id": i, "sequence": "".join(seq), "target": int(y)})
+    fmt = spec.get("format", "jsonl")
+    if fmt == "json":
+        return json.dumps(rows, ensure_ascii=False, indent=1)
+    if fmt == "csv":
+        buf = io.StringIO(); w = csv.DictWriter(buf, fieldnames=["id", "sequence", "target"])
+        w.writeheader(); [w.writerow(r) for r in rows]
+        return buf.getvalue().rstrip("\n")
+    return "\n".join(json.dumps(r, ensure_ascii=False) for r in rows)

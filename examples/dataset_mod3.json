@@ -1,0 +1,2 @@
+{"kind":"dataset","n":300,"seed":7,"alphabet":["a","b","c","d"],"length":16,
+ "rule":{"type":"mod","k":3},"format":"jsonl"}

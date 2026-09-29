@@ -44,6 +44,11 @@ KINDS: dict[str, dict] = {
         "skeleton": {"kind": "list", "title": "<title>",
                      "items": ["<i1>", "<i2>"], "checked": []},
     },
+    "dataset": {                      # synthetic sequence task with a KNOWN algebraic label
+        "desc": "n (sequence, target) pairs for a known rule (parity/mod/contains)",
+        "skeleton": {"kind": "dataset", "n": 200, "seed": 42, "alphabet": ["a", "b", "c"],
+                     "length": 12, "rule": {"type": "mod", "k": 3}, "format": "jsonl"},
+    },
 }
 
 
@@ -85,4 +90,12 @@ def validate(spec: dict) -> list[str]:
         errs.append("code.functions must be a list")
     if kind == "list" and not isinstance(spec.get("items"), list):
         errs.append("list.items must be a list")
+    if kind == "dataset":
+        r = spec.get("rule", {})
+        if r.get("type") not in ("mod", "parity", "contains", "count"):
+            errs.append("dataset.rule.type must be one of mod|parity|contains|count")
+        if not isinstance(spec.get("alphabet"), list) or not spec.get("alphabet"):
+            errs.append("dataset.alphabet must be a non-empty list")
+        if not isinstance(spec.get("length"), int) or spec["length"] < 1:
+            errs.append("dataset.length must be a positive int")
     return errs
