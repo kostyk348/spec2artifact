@@ -1,5 +1,8 @@
 # spec2artifact
 
+[![Release](https://img.shields.io/github/v/release/kostyk348/spec2artifact?sort=semver&color=blue)](https://github.com/kostyk348/spec2artifact/releases)
+[![Last commit](https://img.shields.io/github/last-commit/kostyk348/spec2artifact?branch=master)](https://github.com/kostyk348/spec2artifact/commits/master)
+
 **The LLM writes a small, task-variant SPEC; the algebra renders the whole artifact.**
 Fewer tokens, lower latency, exact output.
 
