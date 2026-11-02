@@ -1,0 +1,34 @@
+[package]
+name = "spec2artifact"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.75"
+description = "LLM writes a small variant spec; the algebra renders the artifact (fewer tokens, less latency)"
+license = "MIT"
+repository = "https://github.com/kostyk348/spec2artifact"
+homepage = "https://github.com/kostyk348/spec2artifact"
+documentation = "https://docs.rs/spec2artifact"
+readme = "README.md"
+keywords = ["llm", "codegen", "nlg", "deterministic", "mcp"]
+categories = ["command-line-utilities", "text-processing"]
+
+[lib]
+name = "spec2artifact"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spec2artifact"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

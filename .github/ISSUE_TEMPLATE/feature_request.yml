@@ -1,0 +1,27 @@
+name: Feature request
+description: A new kind, a new output format, a new tool
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The task this solves
+      description: What artifact do you need to produce, and why does the current set of kinds not cover it?
+    validations:
+      required: true
+  - type: textarea
+    id: spec-shape
+    attributes:
+      label: Proposed spec shape
+      description: A skeleton JSON the LLM would fill, and what the renderer should emit.
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: Renderable deterministically from the spec alone
+          required: true
+        - label: Does not change the existing MCP tools manifest
+          required: true
