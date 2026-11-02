@@ -1,21 +1,62 @@
 name: CI
+
 on:
   push:
+    branches: [master, main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
-      - name: Install dependencies
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Smoke: CLI
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          pip install -r requirements.txt || pip install -e .
-      - name: Byte-compile all sources
+          ./target/release/spec2artifact kinds
+          ./target/release/spec2artifact template records > /tmp/spec.json
+          ./target/release/spec2artifact validate /tmp/spec.json
+          ./target/release/spec2artifact render /tmp/spec.json | head -1
+          ./target/release/spec2artifact fingerprint
+
+      - name: Smoke: MCP server (stdio JSON-RPC)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
-          python -m compileall -q . || (echo 'compileall failed'; exit 1)
-      - name: Run tests
-        run: |
-          pip install pytest && python -m pytest -q
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            '{"jsonrpc":"2.0","id":3,"method":"ping"}' \
+            | ./target/release/spec2artifact mcp | grep -c '"id"' | grep -q 3
