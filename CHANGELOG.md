@@ -3,6 +3,29 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] — 2026-11-03
+
+### Added
+
+- **`bundle` kind — multi-part artifacts with cross-part references**: named
+  parts of any kind, `{ref:part=NAME,stat=STAT[,field=FIELD]}` placeholders,
+  topological ordering (a reference cycle is a validation error reported as a
+  path), exact statistics computed over the generated DATA (`count`, `sum`,
+  `min`, `max`, `mean`, `top`, `unique`) — prose cites the data it describes,
+  so the artifact is self-consistent by construction. Markdown (default,
+  data parts fenced) and `plain` formats; deterministic seed inheritance for
+  parts without their own seed. Example: `examples/bundle_report.{json,md}`
+  (~160-token spec -> 600-record dataset + summary citing exact totals,
+  8.8k output tokens, 0 LLM-written).
+- **`records` distributions** (backward-compatible, same seed by default):
+  `category_weights` (weighted categorical mix), `price_dist: normal |
+  lognormal` (`price_mean`/`price_sd`; lognormal's `price_mean` is the true
+  mean), `sum_to` (exact-sum splitting in integer cents).
+
+### Fixed
+
+- (none — default rendering is byte-identical to 1.0.0; covered by the test suite)
+
 ## [1.0.0] — 2026-11-02
 
 ### Added — Rust port (breaking: replaces the Python implementation)

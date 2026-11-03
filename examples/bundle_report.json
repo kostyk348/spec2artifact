@@ -1,0 +1,81 @@
+{
+  "kind": "bundle",
+  "seed": 42,
+  "title": "Q1 Sales Review",
+  "format": "markdown",
+  "parts": {
+    "orders": {
+      "kind": "records",
+      "n": 600,
+      "seed": 7,
+      "format": "jsonl",
+      "fields": [
+        "id",
+        "name",
+        "category",
+        "price"
+      ],
+      "categories": [
+        "tools",
+        "toys",
+        "books",
+        "food"
+      ],
+      "category_weights": {
+        "tools": 4,
+        "toys": 2,
+        "books": 1,
+        "food": 3
+      },
+      "pools": {
+        "tools": [
+          "Hammer",
+          "Wrench",
+          "Drill"
+        ],
+        "toys": [
+          "Robot",
+          "Kite",
+          "Blocks"
+        ],
+        "books": [
+          "Atlas",
+          "Novel",
+          "Primer"
+        ],
+        "food": [
+          "Bread",
+          "Honey",
+          "Cheese"
+        ]
+      },
+      "price_dist": "lognormal",
+      "price_mean": 42.0,
+      "price_sd": 0.9,
+      "decimals": 2
+    },
+    "summary": {
+      "kind": "report",
+      "title": "Summary",
+      "sections": [
+        {
+          "heading": "Totals",
+          "bullets": [
+            "Orders analyzed: {ref:part=orders,stat=count}.",
+            "Total revenue: {ref:part=orders,stat=sum,field=price}.",
+            "Mean order value: {ref:part=orders,stat=mean,field=price}.",
+            "Largest single order: {ref:part=orders,stat=max,field=price}."
+          ]
+        },
+        {
+          "heading": "Mix",
+          "bullets": [
+            "Best-selling category: {ref:part=orders,stat=top,field=category}.",
+            "Distinct products in the catalogue: {ref:part=orders,stat=unique,field=name}."
+          ]
+        }
+      ],
+      "footer": "Rendered from a 90-token spec; the numbers are computed from the data."
+    }
+  }
+}

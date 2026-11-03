@@ -185,9 +185,243 @@ fn validation_rejects_bad() {
 fn library_entry_points_match_python_surface() {
     assert_eq!(
         spec::kinds(),
-        vec!["code", "dataset", "list", "prose", "records", "report", "table"]
+        vec!["bundle", "code", "dataset", "list", "prose", "records", "report", "table"]
     );
     // same spec -> same artifact across library uses
     let s = template("records");
     assert_eq!(render::render(&s).unwrap(), render::render(&s).unwrap());
+}
+
+// ------------------------------------------------------------------ bundle --
+
+fn records_sum(spec: &Value) -> f64 {
+    let rows: Vec<Value> = render::render(spec)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    rows.iter().map(|r| r["price"].as_f64().unwrap()).sum()
+}
+
+#[test]
+fn bundle_resolves_refs_against_exact_data() {
+    let b = template("bundle");
+    let orders = b["parts"]["orders"].clone();
+    let expected_sum = records_sum(&orders);
+    let artifact = render::render(&b).unwrap();
+
+    let count_line = artifact
+        .lines()
+        .find(|l| l.starts_with("- Orders analyzed: "))
+        .expect("count ref resolved");
+    assert_eq!(count_line, "- Orders analyzed: 120.");
+
+    let sum_line = artifact
+        .lines()
+        .find(|l| l.starts_with("- Total revenue: "))
+        .expect("sum ref resolved");
+    let sum_str: String = sum_line
+        .trim_start_matches("- Total revenue: ")
+        .trim_end_matches('.')
+        .to_string();
+    let rendered_sum: f64 = sum_str.parse().expect("numeric sum in the bundle");
+    assert!(
+        (rendered_sum - expected_sum).abs() < 1e-6,
+        "bundle cites {rendered_sum}, data sums to {expected_sum}"
+    );
+}
+
+#[test]
+fn bundle_is_deterministic() {
+    let b = template("bundle");
+    assert_eq!(render::render(&b).unwrap(), render::render(&b).unwrap());
+}
+
+#[test]
+fn bundle_reference_cycle_is_rejected() {
+    let spec = json!({
+        "kind": "bundle",
+        "parts": {
+            "a": {"kind": "table", "title": "A", "columns": ["x"], "rows": [["{ref:part=b,stat=count}"]]},
+            "b": {"kind": "table", "title": "B", "columns": ["x"], "rows": [["{ref:part=a,stat=count}"]]}
+        }
+    });
+    let errs = spec::validate(&spec);
+    assert!(
+        errs.iter().any(|e| e.contains("reference cycle")),
+        "{errs:?}"
+    );
+    assert!(render::render(&spec)
+        .unwrap_err()
+        .contains("reference cycle"));
+}
+
+#[test]
+fn bundle_unknown_part_and_bad_stats_are_rejected() {
+    let unknown = json!({
+        "kind": "bundle",
+        "parts": {
+            "a": {"kind": "report", "title": "A",
+                  "sections": [{"heading": "h", "bullets": ["{ref:part=nope,stat=count}"]}]}
+        }
+    });
+    assert!(spec::validate(&unknown)
+        .iter()
+        .any(|e| e.contains("unknown part")));
+
+    let bad_stat = json!({
+        "kind": "bundle",
+        "parts": {
+            "a": {"kind": "report", "title": "A",
+                  "sections": [{"heading": "h", "bullets": ["{ref:part=b,stat=median,field=x}"]}]},
+            "b": {"kind": "records", "n": 2, "seed": 1}
+        }
+    });
+    assert!(spec::validate(&bad_stat).iter().any(|e| e.contains("stat")));
+
+    let self_ref = json!({
+        "kind": "bundle",
+        "parts": {
+            "a": {"kind": "report", "title": "A",
+                  "sections": [{"heading": "h", "bullets": ["{ref:part=a,stat=count}"]}]}
+        }
+    });
+    assert!(spec::validate(&self_ref)
+        .iter()
+        .any(|e| e.contains("self-reference")));
+}
+
+#[test]
+fn bundle_part_without_seed_is_seeded_from_bundle() {
+    // two bundles differing only in the bundle seed must render different data
+    let mut b1 = template("bundle");
+    b1["seed"] = json!(1);
+    b1["parts"]["orders"]
+        .as_object_mut()
+        .unwrap()
+        .remove("seed");
+    let mut b2 = template("bundle");
+    b2["seed"] = json!(2);
+    b2["parts"]["orders"]
+        .as_object_mut()
+        .unwrap()
+        .remove("seed");
+    assert_ne!(render::render(&b1).unwrap(), render::render(&b2).unwrap());
+}
+
+#[test]
+fn bundle_plain_format_and_data_stats() {
+    let spec = json!({
+        "kind": "bundle", "format": "plain",
+        "parts": {
+            "data": {"kind": "dataset", "n": 40, "seed": 5, "alphabet": ["a", "b"],
+                     "length": 6, "rule": {"type": "mod", "k": 3}},
+            "note": {"kind": "list", "title": "checks",
+                     "items": ["count is {ref:part=data,stat=count}",
+                               "top target is {ref:part=data,stat=top,field=target}",
+                               "distinct targets {ref:part=data,stat=unique,field=target}"]}
+        }
+    });
+    let out = render::render(&spec).unwrap();
+    assert!(out.contains("count is 40"));
+    assert!(out.contains("distinct targets 3"));
+    assert!(out.contains("---"), "plain format separates parts");
+}
+
+// ------------------------------------------------- records: new distributions --
+
+#[test]
+fn records_sum_to_is_exact() {
+    let mut s = template("records");
+    s["n"] = json!(10);
+    s["sum_to"] = json!(1000);
+    s["price_dist"] = json!("normal");
+    s["price_mean"] = json!(100);
+    s["price_sd"] = json!(30);
+    s["format"] = json!("jsonl");
+    let sum: f64 = records_sum(&s);
+    assert!(
+        (sum - 1000.0).abs() < 1e-9,
+        "sum is exactly sum_to, got {sum}"
+    );
+}
+
+#[test]
+fn records_normal_stays_plausible() {
+    let mut s = template("records");
+    s["n"] = json!(500);
+    s["price_dist"] = json!("normal");
+    s["price_mean"] = json!(100);
+    s["price_sd"] = json!(5);
+    s["format"] = json!("jsonl");
+    let rows: Vec<Value> = render::render(&s)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    let vals: Vec<f64> = rows.iter().map(|r| r["price"].as_f64().unwrap()).collect();
+    assert!(vals.iter().all(|v| (0.0..=200.0).contains(v)));
+    let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+    assert!((mean - 100.0).abs() < 10.0, "mean near 100, got {mean}");
+}
+
+#[test]
+fn records_lognormal_honors_the_mean() {
+    let mut s = template("records");
+    s["n"] = json!(800);
+    s["price_dist"] = json!("lognormal");
+    s["price_mean"] = json!(42);
+    s["price_sd"] = json!(0.9);
+    s["format"] = json!("jsonl");
+    let rows: Vec<Value> = render::render(&s)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    let vals: Vec<f64> = rows.iter().map(|r| r["price"].as_f64().unwrap()).collect();
+    assert!(vals.iter().all(|v| *v > 0.0));
+    let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+    assert!(
+        (mean - 42.0).abs() < 6.0,
+        "lognormal mean near 42, got {mean}"
+    );
+}
+
+#[test]
+fn records_weights_shift_the_mix() {
+    let mut s = template("records");
+    s["n"] = json!(400);
+    s["categories"] = json!(["tools", "toys"]);
+    s["pools"] = json!({"tools": ["Hammer"], "toys": ["Kite"]});
+    s["category_weights"] = json!({"tools": 9, "toys": 1});
+    s["format"] = json!("jsonl");
+    let rows: Vec<Value> = render::render(&s)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    let tools = rows.iter().filter(|r| r["category"] == "tools").count();
+    assert!(tools > 300, "9:1 weights must dominate, got {tools}/400");
+}
+
+#[test]
+fn records_new_options_are_validated() {
+    assert!(spec::validate(&json!({
+        "kind": "records", "n": 5, "price_dist": "normal"
+    }))
+    .iter()
+    .any(|e| e.contains("price_mean")));
+    assert!(!spec::validate(&json!({
+        "kind": "records", "n": 5, "price_dist": "weibull"
+    }))
+    .is_empty());
+    assert!(!spec::validate(&json!({
+        "kind": "records", "n": 5, "sum_to": 0
+    }))
+    .is_empty());
+    assert!(spec::validate(&json!({
+        "kind": "records", "n": 5, "sum_to": 100, "price_dist": "normal",
+        "price_mean": 10, "price_sd": 3
+    }))
+    .is_empty());
 }

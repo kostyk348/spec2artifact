@@ -9,7 +9,7 @@ structured artifact — data, reports, tables, code scaffolds — for 0 LLM toke
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/spec2artifact?sort=semver&color=0ea5e9&label=release)](https://github.com/kostyk348/spec2artifact/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kostyk348/spec2artifact/ci.yml?branch=master&label=CI)](https://github.com/kostyk348/spec2artifact/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-24%20passing-22c55e)](#development)
+[![tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](#development)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
@@ -42,13 +42,54 @@ with the task kind, and the renderer is exact by construction.
 
 | kind | what the LLM fills | what the renderer produces |
 |---|---|---|
-| `records` | n, seed, categories + name pools, ranges | n records (jsonl / csv / json) |
+| `bundle` | named parts (any kinds below) + `{ref:...}` placeholders | a multi-part artifact, **self-consistent by construction** |
+| `records` | n, seed, categories + name pools, ranges, distributions | n records (jsonl / csv / json) |
 | `report` | title, sections, bullets | Markdown |
 | `table` | columns, rows or pools | Markdown table |
 | `code` | language, module, imports, signatures+docs | a code scaffold |
 | `list` | title, items, checked | a ticked list |
 | `dataset` | n, alphabet, length, rule | a synthetic benchmark with a KNOWN label |
 | `prose` | topic + points per paragraph, tone | readable template NLG |
+
+## Bundles: artifacts that cannot disagree with themselves
+
+A `bundle` spec names several parts — each a full spec of any other kind — and
+parts cite each other's **data** through `{ref:part=NAME,stat=STAT[,field=FIELD]}`
+placeholders:
+
+```json
+{"kind": "bundle", "seed": 42, "title": "Q1 Sales Review",
+ "parts": {
+   "orders":  {"kind": "records", "n": 600, "seed": 7, "...": "..."},
+   "summary": {"kind": "report",
+     "sections": [{"heading": "Totals", "bullets": [
+       "Orders analyzed: {ref:part=orders,stat=count}.",
+       "Total revenue: {ref:part=orders,stat=sum,field=price}.",
+       "Best-selling category: {ref:part=orders,stat=top,field=category}."]}]}
+ }}
+```
+
+The renderer topologically orders the parts by their references (a reference
+cycle is a validation error, reported as a path), renders the data parts
+first, computes exact statistics over the generated rows — `count`, `sum`,
+`min`, `max`, `mean`, `top` (most frequent value), `unique` — and substitutes
+them into the dependent parts. **The numbers in the prose are computed from
+the data, so prose and data cannot disagree.** Hallucinated inconsistency is
+impossible by construction. Example: `examples/bundle_report.{json,md}` — a
+~160-token spec renders a 600-order dataset plus a summary that cites its
+exact totals (8.8k output tokens, 0 of them LLM-written).
+
+## Distributions in records
+
+`records` goes beyond uniform ranges, still from one `seed`:
+
+- `category_weights`: `{"tools": 4, "food": 3}` — weighted categorical mix
+  instead of round-robin;
+- `price_dist`: `uniform` (default) | `normal` (`price_mean`, `price_sd`) |
+  `lognormal` (`price_mean` is the true mean);
+- `sum_to`: the price field is split so it sums to EXACTLY this total
+  (budgets, baskets) — the shape comes from the distribution, the residual
+  is distributed in integer cents.
 
 ## Measured (live, one subagent = one LLM call)
 
@@ -120,7 +161,7 @@ same spec, different (but equally deterministic) stream.
 ```bash
 cargo fmt --check                          # formatting
 cargo clippy --all-targets -- -D warnings  # lints, zero tolerance
-cargo test                                 # 24 tests: renderers, validation, CLI, MCP over stdio
+cargo test                                 # 30 tests: renderers, validation, CLI, MCP over stdio
 cargo build --release                      # the binary
 ```
 

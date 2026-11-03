@@ -9,7 +9,7 @@
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/spec2artifact?sort=semver&color=0ea5e9&label=release)](https://github.com/kostyk348/spec2artifact/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kostyk348/spec2artifact/ci.yml?branch=master&label=CI)](https://github.com/kostyk348/spec2artifact/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-24%20passing-22c55e)](#разработка)
+[![tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](#разработка)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
@@ -42,13 +42,54 @@ data-to-text/NLG, генерация с JSON-schema и grammar-constrained decod
 
 | kind | что заполняет LLM | что производит рендерер |
 |---|---|---|
-| `records` | n, seed, категории + пулы имён, диапазоны | n записей (jsonl / csv / json) |
+| `bundle` | именованные части (любые kind ниже) + плейсхолдеры `{ref:...}` | многочастный артефакт, **самосогласованный по построению** |
+| `records` | n, seed, категории + пулы имён, диапазоны, распределения | n записей (jsonl / csv / json) |
 | `report` | заголовок, секции, буллеты | Markdown |
 | `table` | колонки, строки или пулы | Markdown-таблица |
 | `code` | язык, модуль, импорты, сигнатуры+доки | заготовка кода |
 | `list` | заголовок, пункты, отмеченные | список с галочками |
 | `dataset` | n, алфавит, длина, правило | синтетический бенчмарк с ИЗВЕСТной меткой |
 | `prose` | тема + тезисы абзацев, тон | читаемый template-NLG текст |
+
+## Бандлы: артефакты, которые не могут разойтись сами с собой
+
+Спека `bundle` называет несколько частей — каждая полноценная спека другого
+kind — и части ссылаются на **данные** друг друга через плейсхолдеры
+`{ref:part=ИМЯ,stat=СТАТ[,field=ПОЛЕ]}`:
+
+```json
+{"kind": "bundle", "seed": 42, "title": "Q1 Sales Review",
+ "parts": {
+   "orders":  {"kind": "records", "n": 600, "seed": 7, "...": "..."},
+   "summary": {"kind": "report",
+     "sections": [{"heading": "Totals", "bullets": [
+       "Orders analyzed: {ref:part=orders,stat=count}.",
+       "Total revenue: {ref:part=orders,stat=sum,field=price}.",
+       "Best-selling category: {ref:part=orders,stat=top,field=category}."]}]}
+ }}
+```
+
+Рендерер топологически упорядочивает части по ссылкам (цикл ссылок — ошибка
+валидации с путём), рендерит части-данные первыми, считает точные статистики
+по сгенерированным строкам — `count`, `sum`, `min`, `max`, `mean`, `top`
+(самое частое значение), `unique` — и подставляет их в зависимые части.
+**Числа в прозе вычислены из данных, поэтому проза и данные не могут
+разойтись.** Галлюциинированная несогласованность невозможна по построению.
+Пример: `examples/bundle_report.{json,md}` — спека на ~160 токенов рендерит
+датасет из 600 заказов и резюме с точными итогами (8.8k выходных токенов,
+из них LLM не написал ни одного).
+
+## Распределения в records
+
+`records` выходит за рамки равномерных диапазонов, по-прежнему из одного `seed`:
+
+- `category_weights`: `{"tools": 4, "food": 3}` — взвешенная категориальная
+  смесь вместо round-robin;
+- `price_dist`: `uniform` (по умолчанию) | `normal` (`price_mean`, `price_sd`) |
+  `lognormal` (`price_mean` — истинное матожидание);
+- `sum_to`: ценовое поле разбивается так, что сумма ТОЧНО равна этому числу
+  (бюджеты, корзины) — форму задаёт распределение, остаток раскладывается
+  в целых копейках.
 
 ## Измерено (живой замер, один сабагент = один вызов LLM)
 
@@ -121,7 +162,7 @@ RNG — SplitMix64, сидируемый прямо из спеки; поток 
 ```bash
 cargo fmt --check                          # форматирование
 cargo clippy --all-targets -- -D warnings  # линты, нулевая толерантность
-cargo test                                 # 24 теста: рендереры, валидация, CLI, MCP over stdio
+cargo test                                 # 30 теста: рендереры, валидация, CLI, MCP over stdio
 cargo build --release                      # бинарник
 ```
 

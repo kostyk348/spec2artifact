@@ -24,6 +24,7 @@ pub fn render(spec: &Value) -> Result<String, String> {
         "list" => Ok(list(spec)),
         "dataset" => dataset(spec),
         "prose" => Ok(prose(spec)),
+        "bundle" => crate::bundle::render_bundle(spec),
         other => Err(format!(
             "no renderer for kind {other:?}; have {}",
             kinds().join(", ")
@@ -106,7 +107,144 @@ fn emit_rows(
 
 // ------------------------------------------------------------------ records --
 
-fn records(spec: &Value) -> Result<String, String> {
+/// Numeric distributions for the records price field (and `sum_to` splitting).
+mod dist {
+    use super::Rng;
+
+    /// One standard-normal draw (Box-Muller, cos form; consumes 2 uniforms).
+    pub fn normal(rng: &mut Rng, mean: f64, sd: f64) -> f64 {
+        let u1 = rng.random().max(1e-12);
+        let u2 = rng.random();
+        mean + sd * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+
+    /// Lognormal with the spec's `price_mean` as the true mean: mu = ln(mean) - sd^2/2,
+    /// so E[X] = exp(mu + sd^2/2) = mean.
+    pub fn lognormal(rng: &mut Rng, mean: f64, sd: f64) -> f64 {
+        let mu = mean.max(1e-9).ln() - sd * sd / 2.0;
+        normal(rng, mu, sd).exp().max(1e-9)
+    }
+}
+
+/// Which numeric distribution the records price field follows.
+enum PriceDist {
+    Uniform(f64, f64),
+    Normal(f64, f64),
+    LogNormal(f64, f64),
+}
+
+impl PriceDist {
+    fn from_spec(spec: &Value) -> Result<PriceDist, String> {
+        let name = str_field(spec, "price_dist", "uniform");
+        match name.as_str() {
+            "uniform" => {
+                let (lo, hi) = price_range(spec)?;
+                Ok(PriceDist::Uniform(lo, hi))
+            }
+            "normal" => {
+                let (m, s) = mean_sd(spec)?;
+                Ok(PriceDist::Normal(m, s))
+            }
+            "lognormal" => {
+                let (m, s) = mean_sd(spec)?;
+                Ok(PriceDist::LogNormal(m, s))
+            }
+            other => Err(format!(
+                "price_dist must be uniform|normal|lognormal, got {other:?}"
+            )),
+        }
+    }
+
+    /// One raw (non-negative) draw from the distribution.
+    fn draw(&self, rng: &mut Rng) -> f64 {
+        match *self {
+            PriceDist::Uniform(lo, hi) if hi > lo => rng.uniform(lo, hi),
+            PriceDist::Uniform(_, hi) => hi,
+            PriceDist::Normal(m, s) => dist::normal(rng, m, s).max(0.0),
+            PriceDist::LogNormal(m, s) => dist::lognormal(rng, m, s),
+        }
+    }
+}
+
+fn price_range(spec: &Value) -> Result<(f64, f64), String> {
+    spec.get("price_range")
+        .and_then(|v| v.as_array())
+        .and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?)))
+        .filter(|(lo, hi)| lo <= hi)
+        .ok_or_else(|| "price_range must be [lo, hi] with lo <= hi".to_string())
+}
+
+fn mean_sd(spec: &Value) -> Result<(f64, f64), String> {
+    let m = spec
+        .get("price_mean")
+        .and_then(|v| v.as_f64())
+        .filter(|m| m.is_finite() && *m > 0.0)
+        .ok_or_else(|| "price_dist normal|lognormal needs price_mean > 0".to_string())?;
+    let s = spec
+        .get("price_sd")
+        .and_then(|v| v.as_f64())
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .ok_or_else(|| "price_dist normal|lognormal needs price_sd > 0".to_string())?;
+    Ok((m, s))
+}
+
+/// n non-negative rounded values whose sum is EXACTLY `total` (in integer cents:
+/// draw a shape from the distribution, scale to the target, distribute the
+/// rounding residual one cent at a time over the first records).
+fn split_sum_to(dist: &PriceDist, n: u64, total: u64, dec: usize, rng: &mut Rng) -> Vec<f64> {
+    let scale = 10_f64.powi(dec as i32);
+    let target_cents = (total as f64 * scale).round() as i128;
+    let raws: Vec<f64> = (0..n).map(|_| dist.draw(rng).max(1e-9)).collect();
+    let raw_sum: f64 = raws.iter().sum();
+    let mut cents: Vec<i128> = raws
+        .iter()
+        .map(|v| (v * target_cents as f64 / raw_sum).round() as i128)
+        .collect();
+    let mut residual = target_cents - cents.iter().sum::<i128>();
+    let mut i = 0usize;
+    let mut guard = 0u64;
+    while residual != 0 && guard <= n + 2 {
+        guard += 1;
+        let k = i % cents.len();
+        if residual > 0 {
+            cents[k] += 1;
+            residual -= 1;
+        } else if cents[k] > 0 {
+            cents[k] -= 1;
+            residual += 1;
+        }
+        i += 1;
+    }
+    cents.iter().map(|c| *c as f64 / scale).collect()
+}
+
+/// Weighted categorical pick over `cats` (weights default 1 when absent).
+fn weighted_category(
+    cats: &[String],
+    weights: Option<&Map<String, Value>>,
+    rng: &mut Rng,
+) -> usize {
+    let Some(w) = weights else {
+        return 0; // caller falls back to round-robin
+    };
+    let total: u64 = cats
+        .iter()
+        .map(|c| w.get(c).and_then(|v| v.as_u64()).unwrap_or(1))
+        .sum();
+    let mut pick = rng.below(total as usize) as u64;
+    for (i, c) in cats.iter().enumerate() {
+        let cw = w.get(c).and_then(|v| v.as_u64()).unwrap_or(1);
+        if pick < cw {
+            return i;
+        }
+        pick -= cw;
+    }
+    cats.len().saturating_sub(1)
+}
+
+/// The records rows (all built-in fields, canonical order) — exposed so bundles
+/// can compute stats over the data instead of re-parsing rendered text.
+pub(crate) fn records_rows(spec: &Value) -> Result<Vec<Map<String, Value>>, String> {
     let n = u64_field(spec, "n")?;
     let mut rng = Rng::from_spec(spec);
     let cats: Vec<String> = match spec.get("categories").and_then(|v| v.as_array()) {
@@ -116,6 +254,7 @@ fn records(spec: &Value) -> Result<String, String> {
             .collect(),
         _ => vec!["default".into()],
     };
+    let weights = spec.get("category_weights").and_then(|v| v.as_object());
     let pools: Map<String, Value> = match spec.get("pools").and_then(|v| v.as_object()) {
         Some(p) => p.clone(),
         None => {
@@ -129,13 +268,51 @@ fn records(spec: &Value) -> Result<String, String> {
             map
         }
     };
-    let (lo, hi) = spec
-        .get("price_range")
-        .and_then(|v| v.as_array())
-        .and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?)))
-        .unwrap_or((0.0, 0.0));
+    let dist = PriceDist::from_spec(spec)?;
+    let sum_to = spec.get("sum_to").and_then(|v| v.as_u64());
     let dec =
         usize::try_from(spec.get("decimals").and_then(|v| v.as_u64()).unwrap_or(2)).unwrap_or(2);
+
+    let prices: Vec<f64> = match sum_to {
+        Some(total) if n > 0 => {
+            if total == 0 {
+                return Err("sum_to must be a positive number".into());
+            }
+            split_sum_to(&dist, n, total, dec, &mut rng)
+        }
+        _ => (0..n).map(|_| round_to(dist.draw(&mut rng), dec)).collect(),
+    };
+
+    let mut rows: Vec<Map<String, Value>> = Vec::with_capacity(n as usize);
+    for (idx, price) in prices.into_iter().enumerate() {
+        let i = idx as u64 + 1;
+        let c = if weights.is_some() {
+            let k = weighted_category(&cats, weights, &mut rng);
+            &cats[k]
+        } else {
+            &cats[((i - 1) % cats.len() as u64) as usize]
+        };
+        let pool: Vec<Value> = pools
+            .get(c)
+            .and_then(|p| p.as_array())
+            .cloned()
+            .ok_or_else(|| format!("pool missing for category {c:?}"))?;
+        if pool.is_empty() {
+            return Err(format!("pool for category {c:?} is empty"));
+        }
+        let name = rng.choice(&pool).as_str().unwrap_or_default().to_string();
+        let mut row = Map::new();
+        row.insert("id".into(), json!(i));
+        row.insert("name".into(), json!(name));
+        row.insert("category".into(), json!(c));
+        row.insert("price".into(), json!(price));
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn records(spec: &Value) -> Result<String, String> {
+    let rows = records_rows(spec)?;
     let fields: Vec<String> = match spec.get("fields").and_then(|v| v.as_array()) {
         Some(a) => a
             .iter()
@@ -146,27 +323,6 @@ fn records(spec: &Value) -> Result<String, String> {
             .map(|s| s.to_string())
             .collect(),
     };
-
-    let mut rows: Vec<Map<String, Value>> = Vec::with_capacity(n as usize);
-    for i in 1..=n {
-        let c = &cats[((i - 1) % cats.len() as u64) as usize];
-        let pool: Vec<Value> = pools
-            .get(c)
-            .and_then(|p| p.as_array())
-            .cloned()
-            .ok_or_else(|| format!("pool missing for category {c:?}"))?;
-        if pool.is_empty() {
-            return Err(format!("pool for category {c:?} is empty"));
-        }
-        let name = rng.choice(&pool).as_str().unwrap_or_default().to_string();
-        let price = round_to(rng.uniform(lo, hi), dec);
-        let mut row = Map::new();
-        row.insert("id".into(), json!(i));
-        row.insert("name".into(), json!(name));
-        row.insert("category".into(), json!(c));
-        row.insert("price".into(), json!(price));
-        rows.push(row);
-    }
     // keep only requested fields, in the spec's order
     let rows: Vec<Map<String, Value>> = rows
         .into_iter()
@@ -387,7 +543,8 @@ fn list(spec: &Value) -> String {
 
 // ------------------------------------------------------------------ dataset --
 
-fn dataset(spec: &Value) -> Result<String, String> {
+/// The dataset rows (id/sequence/target) — exposed for bundle stats.
+pub(crate) fn dataset_rows(spec: &Value) -> Result<Vec<Map<String, Value>>, String> {
     let n = u64_field(spec, "n")?;
     let mut rng = Rng::from_spec(spec);
     let alpha: Vec<String> = spec
@@ -431,6 +588,11 @@ fn dataset(spec: &Value) -> Result<String, String> {
         row.insert("target".into(), json!(y));
         rows.push(row);
     }
+    Ok(rows)
+}
+
+fn dataset(spec: &Value) -> Result<String, String> {
+    let rows = dataset_rows(spec)?;
     let fields = vec![
         "id".to_string(),
         "sequence".to_string(),

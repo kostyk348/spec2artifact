@@ -16,9 +16,11 @@
 //! Module map:
 //! - [`spec`] — variant spec skeletons per task kind + structural validation
 //! - [`render`] — deterministic renderers (pure functions: spec -> artifact)
+//! - [`bundle`] — multi-part artifacts with cross-part `{ref:...}` references
 //! - [`rng`] — the deterministic PRNG behind seeded rendering
 //! - [`mcp`] — MCP stdio JSON-RPC server (`spec2artifact mcp`)
 
+pub mod bundle;
 pub mod mcp;
 pub mod render;
 pub mod rng;
