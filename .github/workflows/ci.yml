@@ -42,7 +42,7 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      - name: Smoke: CLI
+      - name: "Smoke: CLI"
         if: matrix.os == 'ubuntu-latest'
         run: |
           ./target/release/spec2artifact kinds
@@ -51,7 +51,7 @@ jobs:
           ./target/release/spec2artifact render /tmp/spec.json | head -1
           ./target/release/spec2artifact fingerprint
 
-      - name: Smoke: MCP server (stdio JSON-RPC)
+      - name: "Smoke: MCP server (stdio JSON-RPC)"
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |

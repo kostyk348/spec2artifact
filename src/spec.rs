@@ -17,6 +17,12 @@ pub fn kinds() -> Vec<&'static str> {
 pub fn kind_descriptions() -> &'static [(&'static str, &'static str)] {
     &[
         (
+            "bundle",
+            "multi-part artifact: named parts of any kind + {ref:part,stat,field} \
+             cross-references — the numbers in prose are computed from the data, \
+             so the artifact is self-consistent by construction",
+        ),
+        (
             "code",
             "module with imports + function signatures/docstrings",
         ),
@@ -52,6 +58,26 @@ pub fn kind_description(kind: &str) -> Option<&'static str> {
 /// Unknown kind name.
 pub fn spec_template(kind: &str) -> Result<Value, String> {
     match kind {
+        "bundle" => Ok(json!({
+            "kind": "bundle", "seed": 42, "title": "<title>", "format": "markdown",
+            "parts": {
+                "orders": {
+                    "kind": "records", "n": 120, "seed": 7, "format": "jsonl",
+                    "fields": ["id", "name", "category", "price"],
+                    "categories": ["tools", "toys"], "pools": {"tools": ["Hammer"], "toys": ["Kite"]},
+                    "price_range": [5, 80], "decimals": 2
+                },
+                "summary": {
+                    "kind": "report", "title": "Order summary",
+                    "sections": [{"heading": "Totals", "bullets": [
+                        "Orders analyzed: {ref:part=orders,stat=count}.",
+                        "Total revenue: {ref:part=orders,stat=sum,field=price}.",
+                        "Mean order: {ref:part=orders,stat=mean,field=price}.",
+                        "Best seller: {ref:part=orders,stat=top,field=category}."
+                    ]}]
+                }
+            }
+        })),
         "code" => Ok(json!({
             "kind": "code", "language": "python", "module": "<name>",
             "imports": ["import os"],
@@ -99,6 +125,60 @@ pub fn spec_template(kind: &str) -> Result<Value, String> {
     }
 }
 
+// ------------------------------------------------------------- ref cycles --
+
+/// Find a reference cycle among bundle parts (DFS over `{ref:...}` edges).
+/// Returns the cycle path, e.g. ["a", "b", "a"].
+fn find_cycle(parts: &serde_json::Map<String, Value>) -> Option<Vec<String>> {
+    fn dfs(
+        node: &str,
+        parts: &serde_json::Map<String, Value>,
+        state: &mut std::collections::HashMap<String, u8>,
+        stack: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        state.insert(node.to_string(), 1); // in progress
+        stack.push(node.to_string());
+        if let Some(p) = parts.get(node) {
+            if let Ok(refs) = crate::bundle::spec_refs(p) {
+                for r in refs {
+                    if !parts.contains_key(&r.part) {
+                        continue;
+                    }
+                    match state.get(&r.part) {
+                        Some(1) => {
+                            let pos = stack.iter().position(|n| n == &r.part).unwrap_or(0);
+                            let mut cyc: Vec<String> = stack[pos..].to_vec();
+                            cyc.push(r.part.clone());
+                            return Some(cyc);
+                        }
+                        None | Some(0) => {
+                            if let Some(c) = dfs(&r.part, parts, state, stack) {
+                                return Some(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        stack.pop();
+        state.insert(node.to_string(), 2); // done
+        None
+    }
+    let mut state: std::collections::HashMap<String, u8> = std::collections::HashMap::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut names: Vec<&String> = parts.keys().collect();
+    names.sort();
+    for n in names {
+        if !state.contains_key(n) {
+            if let Some(c) = dfs(n, parts, &mut state, &mut stack) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
 // --------------------------------------------------------------- validation --
 
 fn is_list(v: Option<&Value>) -> bool {
@@ -123,10 +203,138 @@ pub fn validate(spec: &Value) -> Vec<String> {
         )];
     };
     match kind {
+        "bundle" => {
+            match spec.get("parts").and_then(|v| v.as_object()) {
+                None => errs.push("bundle.parts must be an object of name -> spec".into()),
+                Some(parts) if parts.is_empty() => {
+                    errs.push("bundle.parts must not be empty".into())
+                }
+                Some(parts) => {
+                    for (name, p) in parts {
+                        if !p.is_object() {
+                            errs.push(format!("part {name:?} must be an object"));
+                            continue;
+                        }
+                        if p.get("kind").and_then(|v| v.as_str()) == Some("bundle") {
+                            errs.push(format!("part {name:?}: bundles cannot nest bundles"));
+                        }
+                        for e in validate(p) {
+                            errs.push(format!("part {name:?}: {e}"));
+                        }
+                        match crate::bundle::spec_refs(p) {
+                            Err(e) => errs.push(format!("part {name:?}: {e}")),
+                            Ok(refs) => {
+                                for r in refs {
+                                    if r.part == *name {
+                                        errs.push(format!("part {name:?}: self-reference {r:?}"));
+                                        continue;
+                                    }
+                                    match parts.get(&r.part) {
+                                        None => errs.push(format!(
+                                            "part {name:?} references unknown part {:?}",
+                                            r.part
+                                        )),
+                                        Some(target) => {
+                                            let tk = target
+                                                .get("kind")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let ok = match r.stat.as_str() {
+                                                "count" => {
+                                                    matches!(tk, "records" | "dataset" | "table")
+                                                }
+                                                "sum" | "min" | "max" | "mean" | "top"
+                                                | "unique" => {
+                                                    matches!(tk, "records" | "dataset")
+                                                        && r.field.is_some()
+                                                }
+                                                _ => false,
+                                            };
+                                            if !ok {
+                                                errs.push(format!(
+                                                    "part {name:?}: stat {:?} not available on part {:?} (kind {tk:?})",
+                                                    r.stat, r.part
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // reference cycles (surfaces the same error the renderer would give)
+                    if errs.is_empty() {
+                        if let Some(cycle) = find_cycle(parts) {
+                            errs.push(format!("reference cycle: {}", cycle.join(" -> ")));
+                        }
+                    }
+                }
+            }
+            match spec.get("format").and_then(|v| v.as_str()) {
+                None | Some("markdown") | Some("plain") => {}
+                Some(other) => errs.push(format!(
+                    "bundle.format must be markdown|plain, got {other:?}"
+                )),
+            }
+        }
         "records" => {
             match int_at(spec, "n") {
                 Some(n) if n >= 0 => {}
                 _ => errs.push("records.n must be a non-negative int".into()),
+            }
+            if spec.get("sum_to").is_some() {
+                match spec.get("sum_to").and_then(|v| v.as_u64()) {
+                    Some(t) if t > 0 => {
+                        if int_at(spec, "n") == Some(0) {
+                            errs.push("sum_to needs records.n > 0".into());
+                        }
+                    }
+                    _ => errs.push("sum_to must be a positive int".into()),
+                }
+            }
+            match spec.get("price_dist").and_then(|v| v.as_str()) {
+                None | Some("uniform") => {}
+                Some("normal") | Some("lognormal") => {
+                    let ok = spec
+                        .get("price_mean")
+                        .and_then(|v| v.as_f64())
+                        .is_some_and(|m| m > 0.0)
+                        && spec
+                            .get("price_sd")
+                            .and_then(|v| v.as_f64())
+                            .is_some_and(|s| s > 0.0);
+                    if !ok {
+                        errs.push(
+                            "price_dist normal|lognormal needs price_mean > 0 and price_sd > 0"
+                                .into(),
+                        );
+                    }
+                }
+                Some(other) => errs.push(format!(
+                    "price_dist must be uniform|normal|lognormal, got {other:?}"
+                )),
+            }
+            if let Some(w) = spec.get("category_weights").and_then(|v| v.as_object()) {
+                let cats: Vec<&str> = spec
+                    .get("categories")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|c| c.as_str()).collect())
+                    .unwrap_or_default();
+                let mut total = 0u64;
+                for (k, v) in w {
+                    match v.as_u64() {
+                        Some(x) => total += x,
+                        None => {
+                            errs.push(format!("category_weights.{k} must be a non-negative int"))
+                        }
+                    }
+                    if !cats.is_empty() && !cats.contains(&k.as_str()) {
+                        errs.push(format!("category_weights.{k}: unknown category"));
+                    }
+                }
+                if w.is_empty() || total == 0 {
+                    errs.push("category_weights must have a positive total".into());
+                }
             }
             if let (Some(cats), Some(pools)) = (
                 spec.get("categories").and_then(|v| v.as_array()),
