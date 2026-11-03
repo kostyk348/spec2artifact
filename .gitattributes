@@ -1,0 +1,4 @@
+# byte-deterministic artifacts: LF everywhere, no platform surprises
+* text=auto eol=lf
+*.png binary
+*.jpg binary

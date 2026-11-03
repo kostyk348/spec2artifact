@@ -941,7 +941,11 @@ fn showcase_examples_render_and_validate() {
         let errs = spec::validate(&spec);
         assert!(errs.is_empty(), "{spec_file}: {errs:?}");
         let out = render::render(&spec).unwrap();
-        let committed = std::fs::read_to_string(artifact_file).unwrap();
+        // normalize CRLF: windows checkouts may carry CR-LF (git autocrlf)
+
+        let committed = std::fs::read_to_string(artifact_file)
+            .unwrap()
+            .replace("\r\n", "\n");
         assert_eq!(out, committed, "{artifact_file} is stale — regenerate it");
     }
 }
