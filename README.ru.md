@@ -9,7 +9,7 @@
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/spec2artifact?sort=semver&color=0ea5e9&label=release)](https://github.com/kostyk348/spec2artifact/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kostyk348/spec2artifact/ci.yml?branch=master&label=CI)](https://github.com/kostyk348/spec2artifact/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](#разработка)
+[![tests](https://img.shields.io/badge/tests-43%20passing-22c55e)](#разработка)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
@@ -42,6 +42,7 @@ data-to-text/NLG, генерация с JSON-schema и grammar-constrained decod
 
 | kind | что заполняет LLM | что производит рендерер |
 |---|---|---|
+| `chart` | тип графика + инлайн-данные, либо источник `of` внутри бандла | детерминированный Unicode-график (бары / гистограмма / спарклайн) |
 | `bundle` | именованные части (любые kind ниже) + плейсхолдеры `{ref:...}` | многочастный артефакт, **самосогласованный по построению** |
 | `records` | n, seed, категории + пулы имён, диапазоны, распределения | n записей (jsonl / csv / json) |
 | `report` | заголовок, секции, буллеты | Markdown |
@@ -78,6 +79,47 @@ kind — и части ссылаются на **данные** друг дру�
 Пример: `examples/bundle_report.{json,md}` — спека на ~160 токенов рендерит
 датасет из 600 заказов и резюме с точными итогами (8.8k выходных токенов,
 из них LLM не написал ни одного).
+
+## Алгебра: `{expr:...}` — артефакт вычисляет себя сам
+
+Любая строка любого артефакта может содержать выражения:
+
+```
+"Revenue incl. VAT: {expr:ref('orders','sum','price') * 1.2}."
+"List price:        {expr:min(99 * 3 * 0.9, 250)}."
+```
+
+Безопасный детерминированный язык выражений собственной реализации —
+арифметика с обычными приоритетами, сравнения, `&&`/`||`, `if(c,a,b)`,
+`min/max/abs/floor/ceil/round/sqrt/pow/clamp` и ровно один источник данных:
+`ref(part, stat[, field])` — точные статистики, вычисленные по сгенерированным
+строкам другой части. Ни eval, ни сети, ни зависимостей. LLM пишет замысел,
+алгебра делает арифметику — **в любом kind, в том числе автономно**.
+
+## Графики и сводные таблицы из собственных данных бандла
+
+Два дата-зависимых kind замыкают контур — картинки и пивоты, которые ссылаются
+на те же строки, что и проза:
+
+- **`chart`** — `bars`, `histogram`, `sparkline` в Unicode-блочных символах.
+  Инлайн `"data": [[метка, значение], ...]` или — внутри бандла — `"of":
+  {"part": "orders", "by": "category", "stat": "sum", "field": "price"}`
+  поверх строк другой части.
+- **`table.from`** — сводная таблица: `{"kind": "table", "from": {"part":
+  "orders", "by": "category", "cols": {"orders": "count", "revenue":
+  "sum:price", "avg check": "mean:price", "best seller": "top:name"}},
+  "sort": "value", "sort_by": "revenue"}`.
+
+Одна спека рендерит датасет, прозу с его точными итогами и производными
+величинами, сводную таблицу и графики тех же данных — **ничто не может
+разойтись ни с чем**:
+
+```console
+$ spec2artifact tokens examples/algebra_demo.json
+spec ≈356 tokens | artifact ≈9346 tokens | LLM wrote 96.2% fewer tokens
+```
+
+Пример: `examples/algebra_demo.{json,md}`.
 
 ## Распределения в records
 
@@ -162,7 +204,7 @@ RNG — SplitMix64, сидируемый прямо из спеки; поток 
 ```bash
 cargo fmt --check                          # форматирование
 cargo clippy --all-targets -- -D warnings  # линты, нулевая толерантность
-cargo test                                 # 30 теста: рендереры, валидация, CLI, MCP over stdio
+cargo test                                 # 43 теста: рендереры, валидация, CLI, MCP over stdio
 cargo build --release                      # бинарник
 ```
 

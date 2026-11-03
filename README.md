@@ -9,7 +9,7 @@ structured artifact — data, reports, tables, code scaffolds — for 0 LLM toke
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/spec2artifact?sort=semver&color=0ea5e9&label=release)](https://github.com/kostyk348/spec2artifact/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kostyk348/spec2artifact/ci.yml?branch=master&label=CI)](https://github.com/kostyk348/spec2artifact/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-30%20passing-22c55e)](#development)
+[![tests](https://img.shields.io/badge/tests-43%20passing-22c55e)](#development)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
@@ -42,6 +42,7 @@ with the task kind, and the renderer is exact by construction.
 
 | kind | what the LLM fills | what the renderer produces |
 |---|---|---|
+| `chart` | chart type + inline data, or an `of` source inside a bundle | a deterministic Unicode chart (bars / histogram / sparkline) |
 | `bundle` | named parts (any kinds below) + `{ref:...}` placeholders | a multi-part artifact, **self-consistent by construction** |
 | `records` | n, seed, categories + name pools, ranges, distributions | n records (jsonl / csv / json) |
 | `report` | title, sections, bullets | Markdown |
@@ -78,6 +79,48 @@ the data, so prose and data cannot disagree.** Hallucinated inconsistency is
 impossible by construction. Example: `examples/bundle_report.{json,md}` — a
 ~160-token spec renders a 600-order dataset plus a summary that cites its
 exact totals (8.8k output tokens, 0 of them LLM-written).
+
+## The algebra: `{expr:...}` — the artifact computes itself
+
+Every string in any artifact may embed expressions:
+
+```
+"Revenue incl. VAT: {expr:ref('orders','sum','price') * 1.2}."
+"Target gap:      {expr:2 * ref('orders','sum','price') - ref('orders','sum','price')}."
+"List price:      {expr:min(99 * 3 * 0.9, 250)}."
+```
+
+A safe, deterministic, hand-rolled expression language — arithmetic with the
+usual precedence, comparisons, `&&`/`||`, `if(c,a,b)`, `min/max/abs/floor/
+ceil/round/sqrt/pow/clamp`, and exactly one data source: `ref(part, stat[,
+field])`, which reads the exact statistics computed over another part's
+generated rows. No eval, no network, no dependencies. The LLM writes intent;
+the algebra does the arithmetic — **in every kind, standalone too**.
+
+## Charts and rollup tables computed from the bundle's own data
+
+Two data-driven kinds close the loop — pictures and pivots that cite the same
+rows the prose cites:
+
+- **`chart`** — `bars`, `histogram`, `sparkline`, rendered in Unicode block
+  characters. Inline `"data": [[label, value], ...]`, or — inside a bundle —
+  `"of": {"part": "orders", "by": "category", "stat": "sum", "field":
+  "price"}` computed over another part's generated rows.
+- **`table.from`** — a rollup table: `{"kind": "table", "from": {"part":
+  "orders", "by": "category", "cols": {"orders": "count", "revenue":
+  "sum:price", "avg check": "mean:price", "best seller": "top:name"}},
+  "sort": "value", "sort_by": "revenue"}`.
+
+One spec renders a dataset, prose that cites its exact totals and derived
+quantities, a pivot table and charts of the same data — **nothing can
+disagree with anything**:
+
+```console
+$ spec2artifact tokens examples/algebra_demo.json
+spec ≈356 tokens | artifact ≈9346 tokens | LLM wrote 96.2% fewer tokens
+```
+
+Example: `examples/algebra_demo.{json,md}`.
 
 ## Distributions in records
 
@@ -161,7 +204,7 @@ same spec, different (but equally deterministic) stream.
 ```bash
 cargo fmt --check                          # formatting
 cargo clippy --all-targets -- -D warnings  # lints, zero tolerance
-cargo test                                 # 30 tests: renderers, validation, CLI, MCP over stdio
+cargo test                                 # 43 tests: renderers, validation, CLI, MCP over stdio
 cargo build --release                      # the binary
 ```
 

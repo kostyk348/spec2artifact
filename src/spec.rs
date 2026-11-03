@@ -23,6 +23,10 @@ pub fn kind_descriptions() -> &'static [(&'static str, &'static str)] {
              so the artifact is self-consistent by construction",
         ),
         (
+            "chart",
+            "deterministic Unicode chart (bars/histogram/sparkline) from inline data              or, inside a bundle, from another part's rows",
+        ),
+        (
             "code",
             "module with imports + function signatures/docstrings",
         ),
@@ -77,6 +81,10 @@ pub fn spec_template(kind: &str) -> Result<Value, String> {
                     ]}]
                 }
             }
+        })),
+        "chart" => Ok(json!({
+            "kind": "chart", "title": "<title>", "chart": "bars", "width": 40,
+            "data": [["<label>", 42], ["<label>", 17]]
         })),
         "code" => Ok(json!({
             "kind": "code", "language": "python", "module": "<name>",
@@ -372,7 +380,7 @@ pub fn validate(spec: &Value) -> Vec<String> {
                 errs.push("report.sections must be a list".into());
             }
         }
-        "table" => {
+        "table" if spec.get("from").is_none() => {
             if !is_list(spec.get("columns")) {
                 errs.push("table.columns must be a list".into());
             }
@@ -424,6 +432,123 @@ pub fn validate(spec: &Value) -> Vec<String> {
                 }
             }
         }
+        "chart" => {
+            match spec.get("chart").and_then(|v| v.as_str()) {
+                None | Some("bars") | Some("histogram") | Some("sparkline") => {}
+                Some(other) => errs.push(format!(
+                    "chart must be bars|histogram|sparkline, got {other:?}"
+                )),
+            }
+            let has_data = spec
+                .get("data")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    !a.is_empty()
+                        && a.iter().all(|row| {
+                            row.as_array()
+                                .is_some_and(|p| p.len() == 2 && p[1].as_f64().is_some())
+                        })
+                })
+                .unwrap_or(false);
+            if let Some(data) = spec.get("data").and_then(|v| v.as_array()) {
+                if !has_data {
+                    errs.push("chart.data must be non-empty [label, number] pairs".into());
+                }
+                let _ = data;
+            }
+            if let Some(of) = spec.get("of").and_then(|v| v.as_object()) {
+                if of.get("part").and_then(|v| v.as_str()).is_none() {
+                    errs.push("chart.of.part must name a data part".into());
+                }
+                let ck = spec.get("chart").and_then(|v| v.as_str()).unwrap_or("bars");
+                if ck == "bars" && of.get("by").and_then(|v| v.as_str()).is_none() {
+                    errs.push("chart.of.by must name the grouping field (bars)".into());
+                }
+                if let Some(stat) = of.get("stat").and_then(|v| v.as_str()) {
+                    // of carries stat and field as separate keys — join them
+                    let combined = of
+                        .get("field")
+                        .and_then(|v| v.as_str())
+                        .map(|f| format!("{stat}:{f}"))
+                        .unwrap_or_else(|| stat.to_string());
+                    if let Err(e) = crate::rollup::parse_agg(&combined) {
+                        errs.push(format!("chart.of: {e}"));
+                    }
+                }
+                if (ck == "histogram" || ck == "sparkline")
+                    && of.get("field").and_then(|v| v.as_str()).is_none()
+                {
+                    errs.push(format!("chart {ck:?} needs of.field"));
+                }
+            }
+            if !has_data && spec.get("of").is_none() {
+                errs.push(
+                    "chart needs \"data\": [[label, value], ...] or \"of\": {part, by, stat, field}"
+                        .into(),
+                );
+            }
+            if spec
+                .get("width")
+                .is_some_and(|v| !v.is_u64() || v.as_u64() == Some(0))
+            {
+                errs.push("chart.width must be a positive int".into());
+            }
+            if spec
+                .get("buckets")
+                .is_some_and(|v| !v.is_u64() || v.as_u64() == Some(0))
+            {
+                errs.push("chart.buckets must be a positive int".into());
+            }
+        }
+        "table" => {
+            let from = spec.get("from").and_then(|v| v.as_object());
+            if let Some(from) = from.as_ref() {
+                if from.get("part").and_then(|v| v.as_str()).is_none() {
+                    errs.push("table.from.part must name a data part".into());
+                }
+                if from.get("by").and_then(|v| v.as_str()).is_none() {
+                    errs.push("table.from.by must name the grouping field".into());
+                }
+                match from.get("cols").and_then(|v| v.as_object()) {
+                    None => errs
+                        .push("table.from.cols must be an object of NAME -> stat[:field]".into()),
+                    Some(cols) if cols.is_empty() => {
+                        errs.push("table.from.cols must not be empty".into())
+                    }
+                    Some(cols) => {
+                        for (name, v) in cols {
+                            match v.as_str() {
+                                None => {
+                                    errs.push(format!("table.from.cols.{name} must be a string"))
+                                }
+                                Some(sv) => {
+                                    if let Err(e) = crate::rollup::parse_agg(sv) {
+                                        errs.push(format!("table.from.cols.{name}: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            match spec.get("sort").and_then(|v| v.as_str()) {
+                None | Some("label") | Some("value") => {}
+                Some(other) => errs.push(format!("table.sort must be label|value, got {other:?}")),
+            }
+            if let Some(sb) = spec.get("sort_by").and_then(|v| v.as_str()) {
+                match from
+                    .as_ref()
+                    .and_then(|f| f.get("cols").and_then(|v| v.as_object()))
+                {
+                    Some(cols) if cols.contains_key(sb) => {}
+                    Some(cols) => errs.push(format!(
+                        "table.sort_by {sb:?} is not a column; have: {}",
+                        cols.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )),
+                    None => {}
+                }
+            }
+        }
         other => {
             return vec![format!(
                 "kind must be one of {}, got {other:?}",
@@ -431,5 +556,44 @@ pub fn validate(spec: &Value) -> Vec<String> {
             )];
         }
     }
+    // {expr:...} syntax is checked for every kind (bundle parts get this via recursion)
+    if kind != "bundle" {
+        if let Some(e) = check_exprs(spec) {
+            errs.push(e);
+        }
+    }
     errs
+}
+
+/// Syntax-check every {expr:...} token (refs resolve to 0 during the check).
+fn check_exprs(spec: &Value) -> Option<String> {
+    fn walk(v: &Value, errs: &mut Vec<String>) {
+        match v {
+            Value::String(s) => {
+                let mut rest = s.as_str();
+                // reuse the bundle token scanner without importing private items:
+                // find {expr:...} spans directly
+                while let Some(start) = rest.find("{expr:") {
+                    let Some(end_rel) = rest[start..].find('}') else {
+                        errs.push("unclosed {{expr:...}} token (missing '}')".into());
+                        break;
+                    };
+                    let end = start + end_rel;
+                    let body = &rest[start + "{expr:".len()..end];
+                    if body.contains('{') {
+                        errs.push("nested braces are not allowed inside {{expr:...}}".into());
+                    } else if let Err(e) = crate::expr::eval(body, &|_p, _s, _f| Ok(0.0)) {
+                        errs.push(format!("expr {{{body}}}: {e}"));
+                    }
+                    rest = &rest[end + 1..];
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, errs)),
+            Value::Object(o) => o.values().for_each(|x| walk(x, errs)),
+            _ => {}
+        }
+    }
+    let mut errs = Vec::new();
+    walk(spec, &mut errs);
+    errs.into_iter().next()
 }

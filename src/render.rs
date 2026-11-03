@@ -12,6 +12,24 @@ use serde_json::{json, Map, Value};
 /// Unknown kind, or a spec structurally broken beyond what [`crate::spec::validate`]
 /// catches (e.g. missing required keys).
 pub fn render(spec: &Value) -> Result<String, String> {
+    render_with_ctx(spec, None)
+}
+
+/// Render with an optional bundle data context (chart `of` / table `from`
+/// read other parts' rows through it). Standalone rendering passes `None`.
+pub(crate) fn render_with_ctx(
+    spec: &Value,
+    ctx: Option<&crate::chart::Ctx>,
+) -> Result<String, String> {
+    // {expr:...} works in every artifact; {ref:...} only inside bundles
+    let is_bundle = spec.get("kind").and_then(|v| v.as_str()) == Some("bundle");
+    let resolved_spec;
+    let spec = if is_bundle {
+        spec
+    } else {
+        resolved_spec = crate::bundle::resolve_exprs_only(spec, None)?;
+        &resolved_spec
+    };
     let kind = spec
         .get("kind")
         .and_then(|v| v.as_str())
@@ -19,11 +37,12 @@ pub fn render(spec: &Value) -> Result<String, String> {
     match kind {
         "records" => records(spec),
         "report" => Ok(report(spec)),
-        "table" => table(spec),
+        "table" => table(spec, ctx),
         "code" => Ok(code(spec)),
         "list" => Ok(list(spec)),
         "dataset" => dataset(spec),
         "prose" => Ok(prose(spec)),
+        "chart" => crate::chart::render_chart(spec, ctx),
         "bundle" => crate::bundle::render_bundle(spec),
         other => Err(format!(
             "no renderer for kind {other:?}; have {}",
@@ -372,7 +391,7 @@ fn truthy_title_of_footer(spec: &Value) -> Option<String> {
 }
 
 /// Stringify a scalar the way an f-string would.
-fn scalar_text(v: &Value) -> String {
+pub(crate) fn scalar_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         other => other.to_string(),
@@ -390,7 +409,10 @@ fn join_trimmed(mut lines: Vec<String>) -> String {
 
 // -------------------------------------------------------------------- table --
 
-fn table(spec: &Value) -> Result<String, String> {
+fn table(spec: &Value, ctx: Option<&crate::chart::Ctx>) -> Result<String, String> {
+    if spec.get("from").is_some() {
+        return table_from_data(spec, ctx);
+    }
     let cols: Vec<String> = spec
         .get("columns")
         .and_then(|v| v.as_array())
@@ -431,6 +453,121 @@ fn table(spec: &Value) -> Result<String, String> {
         .map(|t| format!("# {t}\n\n"))
         .unwrap_or_default();
     Ok(format!("{}{}\n", head, out.join("\n")))
+}
+
+/// A rollup table computed from another part's grouped rows: `table.from`.
+/// Cells are exact aggregates of the data the bundle generated.
+fn table_from_data(spec: &Value, ctx: Option<&crate::chart::Ctx>) -> Result<String, String> {
+    use crate::rollup::{self, Agg};
+    let from = spec
+        .get("from")
+        .and_then(|v| v.as_object())
+        .ok_or("table.from must be an object {part, by, cols}")?;
+    let part = from
+        .get("part")
+        .and_then(|v| v.as_str())
+        .ok_or("table.from.part must name a data part")?;
+    let rows = ctx
+        .and_then(|c| c.get(part))
+        .map(|st| st.rows.as_slice())
+        .ok_or_else(|| {
+            format!(
+                "table.from.part={part:?} needs a bundle context with that part's data (standalone tables must define rows explicitly)"
+            )
+        })?;
+    let by = from
+        .get("by")
+        .and_then(|v| v.as_str())
+        .ok_or("table.from.by must name the grouping field")?;
+    let cols = from
+        .get("cols")
+        .and_then(|v| v.as_object())
+        .ok_or("table.from.cols must be an object of NAME -> stat[:field]")?;
+    if cols.is_empty() {
+        return Err("table.from.cols must not be empty".into());
+    }
+    let mut names: Vec<&String> = cols.keys().collect();
+    names.sort();
+    let mut aggs = Vec::new();
+    for n in &names {
+        aggs.push(rollup::parse_agg(
+            cols.get(*n).and_then(|v| v.as_str()).unwrap_or(""),
+        )?);
+    }
+
+    // one grouping per column (labels are identical across aggs: same rows, same by)
+    let mut labels: Option<Vec<String>> = None;
+    let mut columns: Vec<Vec<String>> = Vec::new();
+    for (name, (agg, field)) in names.iter().zip(aggs.iter()) {
+        match agg {
+            Agg::Top => {
+                let f = field.as_deref().unwrap_or_default();
+                let m = rollup::top_value_per_group(rows, by, f)?;
+                let ls: Vec<String> = m.keys().cloned().collect();
+                let vals: Vec<String> = m.values().cloned().collect();
+                labels = Some(ls);
+                columns.push(vals);
+            }
+            _ => {
+                let g = rollup::group_rows(rows, by, agg, field)?;
+                labels = Some(g.labels.clone());
+                columns.push(g.values.iter().map(|v| crate::expr::fmt_num(*v)).collect());
+            }
+        }
+        let _ = name;
+    }
+    let labels = labels.ok_or("no groups produced")?;
+    let n = labels.len();
+
+    // Row order: "sort": "label" (default, ascending) or "value" (descending
+    // by the column named in "sort_by", else by the first numeric column —
+    // column names are the sorted keys of from.cols). Strings sort last.
+    let mut order: Vec<usize> = (0..n).collect();
+    match spec.get("sort").and_then(|v| v.as_str()).unwrap_or("label") {
+        "value" => {
+            let named = spec
+                .get("sort_by")
+                .and_then(|v| v.as_str())
+                .and_then(|sb| names.iter().position(|n| n.as_str() == sb));
+            let col_i = match named {
+                Some(i) => i,
+                None => columns
+                    .iter()
+                    .position(|c| c.iter().all(|v| v.parse::<f64>().is_ok()))
+                    .unwrap_or(0),
+            };
+            let col = &columns[col_i];
+            order.sort_by(|&a, &b| {
+                let va = col[a].parse::<f64>().unwrap_or(f64::NEG_INFINITY);
+                let vb = col[b].parse::<f64>().unwrap_or(f64::NEG_INFINITY);
+                vb.partial_cmp(&va)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| labels[a].cmp(&labels[b]))
+            });
+        }
+        _ => order.sort_by(|&a, &b| labels[a].cmp(&labels[b])),
+    }
+
+    let mut out = Vec::new();
+    if let Some(t) = truthy_title(spec) {
+        out.push(format!("# {t}"));
+        out.push(String::new());
+    }
+    let head: Vec<String> = std::iter::once(by.to_string())
+        .chain(names.iter().map(|s| s.to_string()))
+        .collect();
+    out.push(format!("| {} |", head.join(" | ")));
+    let sep: Vec<&str> = head.iter().map(|_| "---").collect();
+    out.push(format!("|{}|", sep.join("|")));
+    for i in order {
+        let mut cells = vec![labels[i].clone()];
+        for col in &columns {
+            cells.push(col[i].clone());
+        }
+        out.push(format!("| {} |", cells.join(" | ")));
+    }
+    out.push(String::new());
+    Ok(out.join("\n"))
 }
 
 fn row_cells(r: &Value) -> Vec<String> {
