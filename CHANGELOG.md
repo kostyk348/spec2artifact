@@ -3,6 +3,24 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] — 2026-11-03
+
+### Added — for games, for code, for everything
+
+- **`map` kind** (`src/map.rs`) — seeded procedural maps for game artifacts:
+  - `terrain` — two-octave value noise (bilinear, min-max normalized) classified into five biome bands (`≈ ░ ▒ ▓ ▲`); custom biome names via `biomes`;
+  - `dungeon` — non-overlapping rectangular rooms joined by deterministic L corridors; summary line with room and walkable-cell counts;
+  - `maze` — perfect maze (recursive backtracker): every cell reachable, exactly one path between any two.
+  Every variant's legend is computed from the rendered grid — the picture and its legend cannot disagree. Same SplitMix64 seed contract as all other kinds.
+- **`tree` kind** (`src/tree.rs`) — Unicode box-drawing trees (`├── └── │`) from nested labels: project layouts, org charts, tech trees. Plain-string leaves accepted; nesting depth capped at 16 (a validation error, not a stack overflow).
+- **`chart: line`** — time-series line charts: Bresenham segments (`·`) with `●` point markers over inline `[x, y]` pairs (numeric labels become the x axis) or, inside a bundle, another part's rows via `of.field`.
+- **Showcase examples**: `examples/game_world.json` (dungeon map + 400 weighted loot rolls + rarity pivot + expression economy sheet + charts: 649 spec tokens → 14 754 artifact tokens) and `examples/project_skeleton.json` (repo tree + core API + roadmap + velocity line + standup template).
+- **Guard rails**: map variant/dimension/biome validation; tree label and nesting validation; `line` rejects non-numeric x rows and `of.by` misuse; expression syntax checking is division-neutral (a real division by zero on a real stat stays a render-time error).
+
+### Compatibility
+
+- Additive only; MCP tool manifest untouched (fingerprint unchanged); default rendering of existing specs is byte-identical. 9 new tests (52 total): maze single-component flood fill, dungeon border integrity + room count, terrain legend-vs-grid equality, exact tree box-drawing, line-chart determinism and flat/single-point edge cases, and showcase regression locks.
+
 ## [1.2.0] — 2026-11-03
 
 ### Added — the artifact computes itself

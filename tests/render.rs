@@ -185,7 +185,10 @@ fn validation_rejects_bad() {
 fn library_entry_points_match_python_surface() {
     assert_eq!(
         spec::kinds(),
-        vec!["bundle", "chart", "code", "dataset", "list", "prose", "records", "report", "table"]
+        vec![
+            "bundle", "chart", "code", "dataset", "list", "map", "prose", "records", "report",
+            "table", "tree"
+        ]
     );
     // same spec -> same artifact across library uses
     let s = template("records");
@@ -720,4 +723,229 @@ fn standalone_refs_fail_with_a_clear_message() {
     });
     let err = render::render(&r).unwrap_err();
     assert!(err.contains("needs a bundle data context"), "{err}");
+}
+
+// --------------------------------------------------------------------- map --
+
+#[test]
+fn map_is_deterministic_and_biomes_match_the_legend() {
+    let spec = json!({
+        "kind": "map", "variant": "terrain", "seed": 42, "w": 40, "h": 12,
+        "title": "Isle", "biomes": ["sea", "beach", "plains", "forest", "alps"]
+    });
+    let out = render::render(&spec).unwrap();
+    assert_eq!(out, render::render(&spec).unwrap(), "same spec, same map");
+    // the legend's per-glyph counts must equal the grid's actual glyph counts
+    let grid: Vec<&str> = out.lines().skip(2).take(12).collect();
+    for (glyph, name) in [
+        ('≈', "sea"),
+        ('░', "beach"),
+        ('▒', "plains"),
+        ('▓', "forest"),
+        ('▲', "alps"),
+    ] {
+        let in_grid: usize = grid.iter().map(|l| l.matches(glyph).count()).sum();
+        let legend_line = out
+            .lines()
+            .find(|l| l.starts_with(glyph) && l.contains(" — "))
+            .unwrap_or_else(|| panic!("legend line for {name} missing:\n{out}"));
+        let n: usize = legend_line
+            .rsplit('—')
+            .next()
+            .unwrap()
+            .trim()
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(in_grid, n, "legend count for {name}");
+    }
+    let total: usize = out
+        .lines()
+        .find(|l| l.contains("cells total"))
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(total, 40 * 12);
+}
+
+#[test]
+fn dungeon_has_rooms_connected_to_the_border_free_grid() {
+    let spec = json!({
+        "kind": "map", "variant": "dungeon", "seed": 7, "w": 44, "h": 18, "rooms": 6,
+        "title": "D"
+    });
+    let out = render::render(&spec).unwrap();
+    assert_eq!(out, render::render(&spec).unwrap());
+    // border is intact (all walls) — rooms and corridors never breach the edge
+    for line in out.lines().skip(2).take(18) {
+        let chars: Vec<char> = line.chars().collect();
+        assert_eq!(chars[0], '#');
+        assert_eq!(chars[chars.len() - 1], '#');
+    }
+    let first = out.lines().nth(1).unwrap();
+    assert!(
+        first.chars().all(|c| c == '#'),
+        "top border is wall: {first}"
+    );
+    let summary = out
+        .lines()
+        .find(|l| l.contains("walkable cells"))
+        .unwrap_or_else(|| panic!("room summary missing:\n{out}"));
+    assert!(summary.contains("rooms"), "{summary}");
+    assert!(summary.contains("walkable cells"), "{summary}");
+    // at least two rooms for this size/seed — corridors only make sense then
+    let rooms: usize = summary
+        .trim_start_matches("# ")
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(rooms >= 2, "want >=2 rooms, got {rooms}");
+}
+
+#[test]
+fn maze_is_perfect_single_component() {
+    // flood-fill from the entry: every open cell must be reachable
+    let spec = json!({"kind": "map", "variant": "maze", "seed": 9, "w": 25, "h": 13, "title": "M"});
+    let out = render::render(&spec).unwrap();
+    assert_eq!(out, render::render(&spec).unwrap());
+    let rows: Vec<Vec<char>> = out
+        .lines()
+        .skip(2)
+        .take(13)
+        .map(|l| l.chars().collect())
+        .collect();
+    let mut open = 0usize;
+    let mut seen = vec![vec![false; 25]; 13];
+    let mut stack = vec![(1usize, 1usize)];
+    while let Some((x, y)) = stack.pop() {
+        if x >= 25 || y >= 13 || seen[y][x] || rows[y][x] != ' ' {
+            continue;
+        }
+        seen[y][x] = true;
+        open += 1;
+        stack.extend([
+            (x + 1, y),
+            (x.wrapping_sub(1), y),
+            (x, y + 1),
+            (x, y.wrapping_sub(1)),
+        ]);
+    }
+    let total_open = rows
+        .iter()
+        .map(|r| r.iter().filter(|c| **c == ' ').count())
+        .sum::<usize>();
+    assert_eq!(open, total_open, "maze must be a single component");
+    assert!(total_open > 13 * 25 / 4, "maze is mostly open cells");
+    let legend = out
+        .lines()
+        .find(|l| l.contains("perfect maze"))
+        .expect("perfect-maze legend");
+    assert!(legend.contains("single component"), "{legend}");
+}
+
+#[test]
+fn map_validation_rejects_bad_variants_and_dims() {
+    assert!(!spec::validate(&json!({"kind": "map", "variant": "sky"})).is_empty());
+    assert!(!spec::validate(&json!({"kind": "map", "w": "wide"})).is_empty());
+    assert!(!spec::validate(&json!({
+        "kind": "map", "biomes": ["a", "b"]
+    }))
+    .is_empty());
+    assert!(spec::validate(&json!({"kind": "map", "seed": 1})).is_empty());
+    assert!(spec::validate(&json!({"kind": "map", "variant": "maze", "rooms": 3})).is_empty());
+}
+
+// -------------------------------------------------------------------- tree --
+
+#[test]
+fn tree_renders_exact_box_drawing() {
+    let t = json!({
+        "kind": "tree", "root": "app/",
+        "nodes": [{"label": "src/", "nodes": ["a.rs", "b.rs"]}, "README.md"]
+    });
+    let out = render::render(&t).unwrap();
+    let want = "\
+app/
+├── src/
+│   ├── a.rs
+│   └── b.rs
+└── README.md
+";
+    assert!(out.contains(want), "{out}");
+    assert_eq!(out, render::render(&t).unwrap());
+}
+
+#[test]
+fn tree_validation_rejects_missing_labels_and_deep_nesting() {
+    assert!(!spec::validate(&json!({"kind": "tree", "nodes": [{"no": "label"}]})).is_empty());
+    assert!(!spec::validate(&json!({"kind": "tree"})).is_empty());
+    assert!(spec::validate(&json!({"kind": "tree", "nodes": ["a", {"label": "b/"}]})).is_empty());
+    let mut deep = json!("leaf");
+    for _ in 0..20 {
+        deep = json!([{"label": "x/", "nodes": deep}]);
+    }
+    assert!(!spec::validate(&json!({"kind": "tree", "nodes": deep})).is_empty());
+}
+
+// -------------------------------------------------------------- chart line --
+
+#[test]
+fn line_chart_is_deterministic_and_marks_points() {
+    let c = json!({
+        "kind": "chart", "chart": "line", "width": 40, "height": 8,
+        "data": [[1, 3], [2, 5], [3, 4], [4, 8], [5, 6]]
+    });
+    let out = render::render(&c).unwrap();
+    assert_eq!(out, render::render(&c).unwrap());
+    assert_eq!(out.matches('●').count(), 5, "one marker per point: {out}");
+    assert!(out.contains('·'), "segments present: {out}");
+    assert!(out.contains("min 3, max 8, n 5"));
+}
+
+#[test]
+fn line_chart_flat_series_and_single_point() {
+    let flat = json!({
+        "kind": "chart", "chart": "line", "width": 20, "height": 6,
+        "data": [[1, 5], [2, 5], [3, 5]]
+    });
+    let out = render::render(&flat).unwrap();
+    assert!(out.matches('●').count() == 3, "{out}");
+    let one = json!({
+        "kind": "chart", "chart": "line", "width": 20, "height": 6,
+        "data": [[1, 7]]
+    });
+    let out = render::render(&one).unwrap();
+    assert!(out.matches('●').count() == 1, "{out}");
+}
+
+// ---------------------------------------------------------------- showcases --
+
+#[test]
+fn showcase_examples_render_and_validate() {
+    for (spec_file, artifact_file) in [
+        ("examples/game_world.json", "examples/game_world.md"),
+        (
+            "examples/project_skeleton.json",
+            "examples/project_skeleton.md",
+        ),
+    ] {
+        let spec: Value = serde_json::from_str(&std::fs::read_to_string(spec_file).unwrap())
+            .unwrap_or_else(|e| panic!("{spec_file}: {e}"));
+        let errs = spec::validate(&spec);
+        assert!(errs.is_empty(), "{spec_file}: {errs:?}");
+        let out = render::render(&spec).unwrap();
+        // normalize CRLF: windows checkouts may carry CR-LF (git autocrlf)
+
+        let committed = std::fs::read_to_string(artifact_file)
+            .unwrap()
+            .replace("\r\n", "\n");
+        assert_eq!(out, committed, "{artifact_file} is stale — regenerate it");
+    }
 }

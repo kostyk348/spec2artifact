@@ -1,0 +1,95 @@
+{
+ "kind": "bundle",
+ "seed": 5,
+ "title": "ledgerd — project skeleton (kickoff artifact)",
+ "parts": {
+  "layout": {
+   "kind": "tree",
+   "title": "Repository layout",
+   "root": "ledgerd/",
+   "nodes": [
+    {"label": "src/", "nodes": [
+     {"label": "domain/", "nodes": ["account.rs", "entry.rs", "mod.rs"]},
+     {"label": "io/", "nodes": ["csv.rs", "sqlite.rs", "mod.rs"]},
+     "lib.rs",
+     "main.rs"
+    ]},
+    {"label": "tests/", "nodes": ["roundtrip.rs", "balance.rs"]},
+    {"label": "docs/", "nodes": ["adr-001-storage.md", "adr-002-money-type.md"]},
+    ".editorconfig",
+    "Cargo.toml",
+    "README.md"
+   ]
+  },
+  "core_module": {
+   "kind": "code",
+   "title": "src/domain/entry.rs — the core type",
+   "language": "rust",
+   "module_doc": "A ledger entry: an immutable amount in minor units with a signed direction.",
+   "imports": ["use crate::domain::account::AccountId;", "use std::fmt;"],
+   "functions": [
+    {"name": "Entry::new", "signature": "fn new(account: AccountId, minor: i64, direction: Direction) -> Self", "doc": "Build an entry; panics on negative minor amounts.", "visibility": "pub"},
+    {"name": "Entry::signed_minor", "signature": "fn signed_minor(&self) -> i64", "doc": "Amount with direction applied — the only money arithmetic callers need.", "visibility": "pub"},
+    {"name": "fmt::Display for Entry", "signature": "fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result", "doc": "Render as `+12.34 account` for logs.", "visibility": "pub"}
+   ]
+  },
+  "roadmap": {
+   "kind": "report",
+   "title": "Roadmap to the first internal release",
+   "sections": [
+    {
+     "heading": "Milestones",
+     "bullets": [
+      "M1 — domain types compile with property tests on signed arithmetic",
+      "M2 — CSV reader round-trips a 10k-row fixture byte-identically",
+      "M3 — SQLite writer passes the balance invariant suite (sum of entries == account balance)",
+      "M4 — CLI: `ledgerd import` and `ledgerd balance <account>`"
+     ]
+    },
+    {
+     "heading": "Risk register",
+     "bullets": [
+      "money as f64 is the classic trap — entries carry i64 minor units from day one",
+      "csv parsing of quoted fields: adopt a crate rather than hand-rolling"
+     ]
+    }
+   ]
+  },
+  "velocity": {
+   "kind": "chart",
+   "title": "Planned vs completed story points (sprints 1–8)",
+   "chart": "line",
+   "width": 48,
+   "height": 10,
+   "data": [[1, 0], [2, 8], [3, 18], [4, 25], [5, 33], [6, 41], [7, 50], [8, 50]]
+  },
+  "intro": {
+   "kind": "prose",
+   "title": "Why this skeleton",
+   "tone": "casual",
+   "seed": 9,
+   "paragraphs": [
+    {
+     "topic": "module boundaries",
+     "points": [
+      "domain knows nothing about io, so the balance invariant is testable without a database",
+      "the only public entry type constructor validates amounts, making negative-money bugs unrepresentable"
+     ]
+    },
+    {
+     "topic": "what is deliberately missing",
+     "points": [
+      "no async runtime until M3 forces the question",
+      "no migration framework before the sqlite writer lands"
+     ]
+    }
+   ]
+  },
+  "standup_template": {
+   "kind": "list",
+   "title": "Daily standup template",
+   "items": ["Yesterday: <one shippable unit>", "Today: <one shippable unit>", "Blockers: <link, not prose>"],
+   "checked": [0]
+  }
+ }
+}

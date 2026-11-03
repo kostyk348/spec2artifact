@@ -9,7 +9,7 @@
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/spec2artifact?sort=semver&color=0ea5e9&label=release)](https://github.com/kostyk348/spec2artifact/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kostyk348/spec2artifact/ci.yml?branch=master&label=CI)](https://github.com/kostyk348/spec2artifact/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-43%20passing-22c55e)](#разработка)
+[![tests](https://img.shields.io/badge/tests-52%20passing-22c55e)](#разработка)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
@@ -42,7 +42,9 @@ data-to-text/NLG, генерация с JSON-schema и grammar-constrained decod
 
 | kind | что заполняет LLM | что производит рендерер |
 |---|---|---|
-| `chart` | тип графика + инлайн-данные, либо источник `of` внутри бандла | детерминированный Unicode-график (бары / гистограмма / спарклайн) |
+| `chart` | тип графика + инлайн-данные, либо источник `of` внутри бандла | детерминированный Unicode-график (бары / линия / гистограмма / спарклайн) |
+| `map` | вариант + seed + размеры (+ названия биомов) | сеяная процедурная карта: terrain / dungeon / maze с точной легендой |
+| `tree` | вложенные метки | Unicode-дерево (├── └──) |
 | `bundle` | именованные части (любые kind ниже) + плейсхолдеры `{ref:...}` | многочастный артефакт, **самосогласованный по построению** |
 | `records` | n, seed, категории + пулы имён, диапазоны, распределения | n записей (jsonl / csv / json) |
 | `report` | заголовок, секции, буллеты | Markdown |
@@ -79,6 +81,41 @@ kind — и части ссылаются на **данные** друг дру�
 Пример: `examples/bundle_report.{json,md}` — спека на ~160 токенов рендерит
 датасет из 600 заказов и резюме с точными итогами (8.8k выходных токенов,
 из них LLM не написал ни одного).
+
+## Для игр, для кода, для всего
+
+**`map`** — сеяные процедурные миры в игровых артефактах. Три варианта, все
+привязаны к seed спеки: `terrain` (двухоктавный value noise, пять биомов),
+`dungeon` (непересекающиеся комнаты с L-коридорами) и `maze` (*идеальный*
+лабиринт — каждая клетка достижима, путь между любыми двумя единственен).
+Легенда считается по отрисованной сетке — картинка и легенда не могут
+разойтись:
+
+```
+█████████████████████
+█         █         █
+█████████ █████ █ █ █
+█       █     █ █ █ █      █ wall — perfect maze: every cell reachable,
+█ ███████████ ███ █ █      single component, 79 open cells
+```
+
+**`tree`** — структуры репозиториев, оргчарты и техдеревья точными
+бокс-символами (`├── └── │`): вложенные метки на входе, детерминированная
+графика на выходе.
+
+**`chart: line`** — тайм-серии присоединяются к барам, гистограммам и
+спарклайнам: сегменты Брезенхэма с маркерами `●` из инлайн-пар `[x, y]` или
+строк другой части.
+
+Две витрины доказывают диапазон:
+
+- `examples/game_world.json` — стартовый набор подземелья: сеяная карта
+  катакомб, 400 взвешенных бросков лута, пивот по редкости, экономический
+  лист из выражений над теми же строками и два графика. **649 токенов спеки →
+  14 754 токена артефакта (95.6% не написал никто).**
+- `examples/project_skeleton.json` — артефакт старта нового репозитория:
+  дерево проекта, API ключевого модуля, роадмап, линейный график скорости и
+  шаблон стендапа.
 
 ## Алгебра: `{expr:...}` — артефакт вычисляет себя сам
 
@@ -204,7 +241,7 @@ RNG — SplitMix64, сидируемый прямо из спеки; поток 
 ```bash
 cargo fmt --check                          # форматирование
 cargo clippy --all-targets -- -D warnings  # линты, нулевая толерантность
-cargo test                                 # 43 теста: рендереры, валидация, CLI, MCP over stdio
+cargo test                                 # 52 теста: рендереры, валидация, CLI, MCP over stdio
 cargo build --release                      # бинарник
 ```
 

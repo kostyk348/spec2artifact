@@ -18,7 +18,9 @@
 //! - [`render`] — deterministic renderers (pure functions: spec -> artifact)
 //! - [`bundle`] — multi-part artifacts with cross-part `{ref:...}` references
 //! - [`expr`] — the safe expression algebra behind `{expr:...}` (arithmetic over `ref(...)`)
-//! - [`chart`] — deterministic Unicode charts from bundle data (bars/histogram/sparkline)
+//! - [`chart`] — deterministic Unicode charts from bundle data (bars/line/histogram/sparkline)
+//! - [`map`] — seeded procedural maps for game artifacts (terrain/dungeon/maze)
+//! - [`tree`] — deterministic Unicode trees (project layouts, tech trees)
 //! - [`rollup`] — group-by aggregations powering charts and rollup tables
 //! - [`rng`] — the deterministic PRNG behind seeded rendering
 //! - [`mcp`] — MCP stdio JSON-RPC server (`spec2artifact mcp`)
@@ -26,11 +28,13 @@
 pub mod bundle;
 pub mod chart;
 pub mod expr;
+pub mod map;
 pub mod mcp;
 pub mod render;
 pub mod rng;
 pub mod rollup;
 pub mod spec;
+pub mod tree;
 
 pub use render::render;
 pub use spec::{kinds, spec_template, validate};

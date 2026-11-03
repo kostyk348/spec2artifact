@@ -36,6 +36,10 @@ pub fn kind_descriptions() -> &'static [(&'static str, &'static str)] {
         ),
         ("list", "a ticked list"),
         (
+            "map",
+            "seeded procedural map for game artifacts: terrain (value-noise biomes),              dungeon (rooms + corridors) or maze (perfect, single component)",
+        ),
+        (
             "prose",
             "readable prose from a plan (topic + points per paragraph); template NLG",
         ),
@@ -44,6 +48,11 @@ pub fn kind_descriptions() -> &'static [(&'static str, &'static str)] {
             "n records with fields drawn from per-category pools",
         ),
         ("report", "title + sections with bullets"),
+        (
+            "tree",
+            "Unicode box-drawing tree from nested labels: project layouts, \
+             org charts, tech trees",
+        ),
         ("table", "columns + rows (explicit or generated from pools)"),
     ]
 }
@@ -101,6 +110,11 @@ pub fn spec_template(kind: &str) -> Result<Value, String> {
             "kind": "list", "title": "<title>",
             "items": ["<i1>", "<i2>"], "checked": []
         })),
+        "map" => Ok(json!({
+            "kind": "map", "title": "<region name>", "variant": "terrain",
+            "seed": 0, "w": 40, "h": 16,
+            "biomes": ["<sea>", "<beach>", "<plains>", "<forest>", "<mountains>"]
+        })),
         "prose" => Ok(json!({
             "kind": "prose", "title": "<title>", "tone": "neutral", "seed": 42,
             "paragraphs": [{"topic": "<topic>", "points": ["<claim 1>", "<claim 2>"]}],
@@ -120,6 +134,10 @@ pub fn spec_template(kind: &str) -> Result<Value, String> {
             "kind": "report", "title": "<title>",
             "sections": [{"heading": "<h>", "bullets": ["<b1>", "<b2>"]}],
             "footer": ""
+        })),
+        "tree" => Ok(json!({
+            "kind": "tree", "title": "<tree title>", "root": "<root label>/",
+            "nodes": [{"label": "<dir>/", "nodes": ["<leaf>", "<leaf>"]}, "<leaf>"]
         })),
         "table" => Ok(json!({
             "kind": "table", "title": "<title>",
@@ -434,7 +452,7 @@ pub fn validate(spec: &Value) -> Vec<String> {
         }
         "chart" => {
             match spec.get("chart").and_then(|v| v.as_str()) {
-                None | Some("bars") | Some("histogram") | Some("sparkline") => {}
+                None | Some("bars") | Some("line") | Some("histogram") | Some("sparkline") => {}
                 Some(other) => errs.push(format!(
                     "chart must be bars|histogram|sparkline, got {other:?}"
                 )),
@@ -454,7 +472,16 @@ pub fn validate(spec: &Value) -> Vec<String> {
                 if !has_data {
                     errs.push("chart.data must be non-empty [label, number] pairs".into());
                 }
-                let _ = data;
+                if spec.get("chart").and_then(|v| v.as_str()) == Some("line") {
+                    for row in data {
+                        // line accepts [x, y] numbers; string labels become the index
+                        if let Some(p) = row.as_array() {
+                            if p.len() == 2 && !p[0].is_string() && p[0].as_f64().is_none() {
+                                errs.push("chart line.data rows must be [number, number]".into());
+                            }
+                        }
+                    }
+                }
             }
             if let Some(of) = spec.get("of").and_then(|v| v.as_object()) {
                 if of.get("part").and_then(|v| v.as_str()).is_none() {
@@ -463,6 +490,13 @@ pub fn validate(spec: &Value) -> Vec<String> {
                 let ck = spec.get("chart").and_then(|v| v.as_str()).unwrap_or("bars");
                 if ck == "bars" && of.get("by").and_then(|v| v.as_str()).is_none() {
                     errs.push("chart.of.by must name the grouping field (bars)".into());
+                }
+                if (ck == "histogram" || ck == "sparkline" || ck == "line")
+                    && of.get("by").is_some()
+                {
+                    errs.push(format!(
+                        "chart {ck:?} is a sequence — use of.field, not of.by"
+                    ));
                 }
                 if let Some(stat) = of.get("stat").and_then(|v| v.as_str()) {
                     // of carries stat and field as separate keys — join them
@@ -549,6 +583,65 @@ pub fn validate(spec: &Value) -> Vec<String> {
                 }
             }
         }
+        "map" => {
+            match spec.get("variant").and_then(|v| v.as_str()) {
+                None | Some("terrain") | Some("dungeon") | Some("maze") => {}
+                Some(other) => errs.push(format!(
+                    "map.variant must be terrain|dungeon|maze, got {other:?}"
+                )),
+            }
+            for k in ["w", "h", "rooms"] {
+                if spec.get(k).is_some_and(|v| !v.is_null() && !v.is_u64()) {
+                    errs.push(format!("map.{k} must be a positive int"));
+                }
+            }
+            if let Some(b) = spec.get("biomes").and_then(|v| v.as_array()) {
+                if b.len() != 5 || b.iter().any(|x| !x.is_string()) {
+                    errs.push("map.biomes must list exactly 5 string names".into());
+                }
+            }
+        }
+        "tree" => {
+            if spec
+                .get("root")
+                .is_some_and(|v| !v.is_null() && !v.is_string())
+            {
+                errs.push("tree.root must be a string".into());
+            }
+            fn check_nodes(v: &Value, errs: &mut Vec<String>, depth: usize) {
+                if depth > 16 {
+                    errs.push("tree.nodes nested deeper than 16 levels".into());
+                    return;
+                }
+                match v {
+                    Value::Array(a) => {
+                        for x in a {
+                            match x {
+                                Value::String(_) => {}
+                                Value::Object(o) => {
+                                    if !o.get("label").is_some_and(|l| l.is_string()) {
+                                        errs.push(
+                                            "every tree node needs a string \"label\"".into(),
+                                        );
+                                    }
+                                    if let Some(ch) = o.get("nodes") {
+                                        check_nodes(ch, errs, depth + 1);
+                                    }
+                                }
+                                _ => errs.push(
+                                    "tree nodes must be strings or objects with a label".into(),
+                                ),
+                            }
+                        }
+                    }
+                    _ => errs.push("tree.nodes must be a list".into()),
+                }
+            }
+            match spec.get("nodes") {
+                None => errs.push("tree needs \"nodes\"".into()),
+                Some(nodes) => check_nodes(nodes, &mut errs, 0),
+            }
+        }
         other => {
             return vec![format!(
                 "kind must be one of {}, got {other:?}",
@@ -582,7 +675,7 @@ fn check_exprs(spec: &Value) -> Option<String> {
                     let body = &rest[start + "{expr:".len()..end];
                     if body.contains('{') {
                         errs.push("nested braces are not allowed inside {{expr:...}}".into());
-                    } else if let Err(e) = crate::expr::eval(body, &|_p, _s, _f| Ok(0.0)) {
+                    } else if let Err(e) = crate::expr::eval(body, &|_p, _s, _f| Ok(1.0)) {
                         errs.push(format!("expr {{{body}}}: {e}"));
                     }
                     rest = &rest[end + 1..];

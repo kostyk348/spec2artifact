@@ -43,6 +43,8 @@ pub(crate) fn render_with_ctx(
         "dataset" => dataset(spec),
         "prose" => Ok(prose(spec)),
         "chart" => crate::chart::render_chart(spec, ctx),
+        "map" => crate::map::render_map(spec),
+        "tree" => crate::tree::render_tree(spec),
         "bundle" => crate::bundle::render_bundle(spec),
         other => Err(format!(
             "no renderer for kind {other:?}; have {}",
@@ -65,7 +67,7 @@ fn str_field<'a>(spec: &'a Value, key: &str, default: &'a str) -> String {
         .to_string()
 }
 
-fn truthy_title(spec: &Value) -> Option<String> {
+pub(crate) fn truthy_title(spec: &Value) -> Option<String> {
     spec.get("title")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
