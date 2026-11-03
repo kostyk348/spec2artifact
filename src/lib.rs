@@ -17,13 +17,19 @@
 //! - [`spec`] — variant spec skeletons per task kind + structural validation
 //! - [`render`] — deterministic renderers (pure functions: spec -> artifact)
 //! - [`bundle`] — multi-part artifacts with cross-part `{ref:...}` references
+//! - [`expr`] — the safe expression algebra behind `{expr:...}` (arithmetic over `ref(...)`)
+//! - [`chart`] — deterministic Unicode charts from bundle data (bars/histogram/sparkline)
+//! - [`rollup`] — group-by aggregations powering charts and rollup tables
 //! - [`rng`] — the deterministic PRNG behind seeded rendering
 //! - [`mcp`] — MCP stdio JSON-RPC server (`spec2artifact mcp`)
 
 pub mod bundle;
+pub mod chart;
+pub mod expr;
 pub mod mcp;
 pub mod render;
 pub mod rng;
+pub mod rollup;
 pub mod spec;
 
 pub use render::render;

@@ -3,6 +3,41 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] — 2026-11-03
+
+### Added — the artifact computes itself
+
+- **`{expr:...}` — a safe expression algebra inside every artifact** (`src/expr.rs`):
+  arithmetic with the usual precedence, comparisons, `&&`/`||`,
+  `if(c,a,b)`, `min/max/abs/floor/ceil/round/sqrt/pow/clamp`, and one data
+  source — `ref(part, stat[, field])` over another part's exact statistics.
+  Hand-rolled recursive-descent parser; no eval, no network, no dependencies.
+  Works in every kind, standalone too (`{ref:...}` still requires a bundle).
+  `{expr:1 +}` and friends are validation errors before rendering.
+- **`chart` kind** (`src/chart.rs`): deterministic Unicode charts — `bars`
+  (descending, ties by label), `histogram` (bucketed), `sparkline`. Inline
+  `"data"` or, inside a bundle, an `of: {part, by, stat, field}` source
+  computed over another part's generated rows.
+- **`table.from` — rollup tables**: group another part's rows and aggregate
+  (`count`, `sum:min:max:mean:unique` over a field, `top:name` as the most
+  frequent value as a cell), `sort: label|value` with `sort_by` column.
+- **Bundle plumbing**: charts/rollup tables participate in the reference
+  topo-order (an `of`/`from` source is an edge, so data always renders
+  before its charts); `{expr:...}` bodies' `ref('part', ...)` calls are
+  dependency edges too; parts expose their rows to the data context.
+- **`spec2artifact tokens spec.json`**: estimates the spec's cost vs the
+  rendered artifact's (~4 chars/token) — the value proposition, measured per
+  artifact. Example: `examples/algebra_demo.json` — 356-token spec renders
+  9346 tokens of dataset + prose + pivot + charts (96.2% written by nobody).
+
+### Compatibility
+
+- Additive only; MCP tool manifest untouched (fingerprint unchanged:
+  `tools=4 sha256=656dc4e23ac0f7f0cb5efb6354b0edb2`); default rendering of
+  existing specs is byte-identical. 13 new tests (43 total), including the
+  self-consistency proof: every cell of a rendered rollup table is parsed
+  back and compared against an independent computation over the same rows.
+
 ## [1.1.0] — 2026-11-03
 
 ### Added

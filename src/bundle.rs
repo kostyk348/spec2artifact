@@ -10,6 +10,7 @@
 
 use crate::render::{dataset_rows, records_rows};
 use crate::rng::Rng;
+use crate::rollup::PartStats;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
@@ -19,15 +20,6 @@ pub(crate) struct Ref {
     pub part: String,
     pub stat: String,
     pub field: Option<String>,
-}
-
-/// Exact statistics computed over a part's generated data.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct PartStats {
-    pub count: u64,
-    pub nums: BTreeMap<String, f64>, // sum/min/max/mean per field
-    pub top: BTreeMap<String, String>,
-    pub uniques: BTreeMap<String, u64>,
 }
 
 impl PartStats {
@@ -114,6 +106,120 @@ pub(crate) fn first_ref(s: &str) -> Result<Option<(Ref, usize, usize)>, String> 
     )))
 }
 
+enum Token {
+    Ref(Ref, usize, usize),
+    Expr(String, usize, usize),
+}
+
+/// The next `{ref:...}` or `{expr:...}` token in `s`.
+fn next_token(s: &str) -> Result<Option<Token>, String> {
+    let rpos = s.find("{ref:");
+    let epos = s.find("{expr:");
+    match (rpos, epos) {
+        (None, None) => Ok(None),
+        (r, e)
+            if match (r, e) {
+                (Some(rp), Some(ep)) => rp < ep,
+                (Some(_), None) => true,
+                _ => false,
+            } =>
+        {
+            let (t, start, end) = first_ref(s)?.expect("position already found");
+            Ok(Some(Token::Ref(t, start, end)))
+        }
+        _ => {
+            let start = epos.expect("position already found");
+            let Some(end_rel) = s[start..].find('}') else {
+                return Err("unclosed {{expr:...}} token (missing '}')".into());
+            };
+            let end = start + end_rel;
+            let body = s[start + "{expr:".len()..end].to_string();
+            if body.contains('{') {
+                return Err("nested braces are not allowed inside {{expr:...}}".into());
+            }
+            Ok(Some(Token::Expr(body, start, end)))
+        }
+    }
+}
+
+/// The numeric surface expressions may read: part -> stat[:field] -> value.
+fn expr_lookup(
+    stats: &BTreeMap<String, PartStats>,
+) -> impl Fn(&str, &str, Option<&str>) -> Result<f64, String> + '_ {
+    move |part, stat, field| {
+        let key = match field {
+            Some(f) => format!("{stat}:{f}"),
+            None => stat.to_string(),
+        };
+        stats
+            .get(part)
+            .map(|st| st.num_map())
+            .and_then(|m| m.get(&key).copied())
+            .ok_or_else(|| format!("ref({part:?}, {stat:?}) has no value"))
+    }
+}
+
+/// Resolve ONLY {expr:...} tokens (standalone rendering: refs need a context).
+/// `stats` is None outside a bundle — any ref(...) call then errors.
+pub(crate) fn resolve_exprs_only(
+    spec: &Value,
+    stats: Option<&BTreeMap<String, PartStats>>,
+) -> Result<Value, String> {
+    match spec {
+        Value::String(s) => {
+            let mut out = String::new();
+            let mut rest = s.as_str();
+            while let Some(tok) = next_token(rest)? {
+                let (body, start, end) = match tok {
+                    Token::Expr(b, st, en) => (b, st, en),
+                    Token::Ref(r, _, _) => {
+                        return Err(format!(
+                            "{{ref:part={},...}} needs a bundle data context (standalone artifacts have no data to reference)",
+                            r.part
+                        ));
+                    }
+                };
+                let lookup = |p: &str, stat: &str, field: Option<&str>| -> Result<f64, String> {
+                    let key = match field {
+                        Some(f) => format!("{stat}:{f}"),
+                        None => stat.to_string(),
+                    };
+                    stats
+                        .and_then(|m| m.get(p).map(|st| st.num_map()))
+                        .and_then(|m| m.get(&key).copied())
+                        .ok_or_else(|| {
+                            format!(
+                                "ref({p:?}, {stat:?}) has no value (standalone artifacts have no bundle data)"
+                            )
+                        })
+                };
+                let v = crate::expr::eval(&body, &lookup)
+                    .map_err(|e| format!("expr {{{body}}}: {e}"))?;
+                out.push_str(&rest[..start]);
+                out.push_str(&crate::expr::fmt_num(v));
+                rest = &rest[end + 1..];
+            }
+            out.push_str(rest);
+            Ok(Value::String(out))
+        }
+        Value::Array(a) => {
+            let mut out = Vec::with_capacity(a.len());
+            for x in a {
+                out.push(resolve_exprs_only(x, stats)?);
+            }
+            Ok(Value::Array(out))
+        }
+        Value::Object(o) => {
+            let mut out = Map::new();
+            for (k, x) in o {
+                out.insert(k.clone(), resolve_exprs_only(x, stats)?);
+            }
+            Ok(Value::Object(out))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
 /// Every ref in every string of the spec (recursively).
 pub(crate) fn spec_refs(spec: &Value) -> Result<Vec<Ref>, String> {
     let mut out = Vec::new();
@@ -156,16 +262,28 @@ pub(crate) fn resolve(
         Value::String(s) => {
             let mut out = String::new();
             let mut rest = s.as_str();
-            while let Some((r, start, end)) = first_ref(rest)? {
-                let Some(st) = stats.get(&r.part) else {
-                    return Err(format!(
-                        "ref to part {:?} has no stats (bug in topo order)",
-                        r.part
-                    ));
-                };
-                out.push_str(&rest[..start]);
-                out.push_str(&st.get(&r)?);
-                rest = &rest[end + 1..];
+            while let Some(tok) = next_token(rest)? {
+                match tok {
+                    Token::Ref(r, start, end) => {
+                        let Some(st) = stats.get(&r.part) else {
+                            return Err(format!(
+                                "ref to part {:?} has no stats (bug in topo order)",
+                                r.part
+                            ));
+                        };
+                        out.push_str(&rest[..start]);
+                        out.push_str(&st.get(&r)?);
+                        rest = &rest[end + 1..];
+                    }
+                    Token::Expr(body, start, end) => {
+                        let lookup = expr_lookup(stats);
+                        let v = crate::expr::eval(&body, &lookup)
+                            .map_err(|e| format!("expr {{{body}}}: {e}"))?;
+                        out.push_str(&rest[..start]);
+                        out.push_str(&crate::expr::fmt_num(v));
+                        rest = &rest[end + 1..];
+                    }
+                }
             }
             out.push_str(rest);
             Ok(Value::String(out))
@@ -204,6 +322,9 @@ pub(crate) fn part_stats(kind: &str, spec: &Value) -> Result<PartStats, String> 
                 ..PartStats::default()
             });
         }
+        "chart" => {
+            return Err("chart exposes no stats; reference a records/dataset/table part".into())
+        }
         other => {
             return Err(format!(
                 "kind {other:?} exposes no stats; reference a records/dataset/table part"
@@ -212,6 +333,7 @@ pub(crate) fn part_stats(kind: &str, spec: &Value) -> Result<PartStats, String> 
     };
     let mut st = PartStats {
         count: rows.len() as u64,
+        rows: rows.clone(),
         ..PartStats::default()
     };
     if rows.is_empty() {
@@ -300,31 +422,130 @@ pub(crate) fn render_bundle(spec: &Value) -> Result<String, String> {
     let mut bodies: Vec<(String, String, String)> = Vec::new(); // (name, kind, rendered)
     for name in &order {
         let p = &parts[name];
-        // stats must exist BEFORE any part that references this one is resolved;
-        // compute stats from the (possibly ref-resolved) spec, then render it
+        // stats/rows must exist BEFORE any part that reads this one (refs,
+        // exprs, charts, rollup tables) is rendered; compute them from the
+        // (possibly resolved) spec, then render with the current data context
         let resolved = resolve(p, &stats)?;
         let kind = resolved
             .get("kind")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let body = crate::render::render(&resolved)?;
-        if refs_target(&parts, name) {
+        if supplies(&parts, name) {
             stats.insert(name.clone(), part_stats(&kind, &resolved)?);
         }
+        let body = crate::render::render_with_ctx(&resolved, Some(&stats))?;
         bodies.push((name.clone(), kind, body));
     }
     emit(spec, &bodies)
 }
 
-/// Does any other part reference `name`?
-fn refs_target(parts: &Map<String, Value>, name: &str) -> bool {
+/// Does any other part read `name` — via `{ref:...}`, inside an `{expr:...}`
+/// body's `ref('name', ...)`, or as a chart/table data source (`of`/`from`)?
+fn supplies(parts: &Map<String, Value>, name: &str) -> bool {
     parts.iter().any(|(other, p)| {
         other != name
-            && spec_refs(p)
-                .map(|rs| rs.iter().any(|r| r.part == name))
+            && all_deps(p)
+                .map(|ds| ds.contains(&name.to_string()))
                 .unwrap_or(false)
     })
+}
+
+/// Every part name another part's strings reference: {ref:...} targets, parts
+/// named in ref('...') inside {expr:...} bodies, and of/from.part data sources.
+pub(crate) fn all_deps(spec: &Value) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = spec_refs(spec)?.into_iter().map(|r| r.part).collect();
+    out.extend(expr_deps(spec)?);
+    out.extend(data_deps(spec));
+    Ok(out)
+}
+
+/// Parts named in ref('part', ...) calls inside {expr:...} strings.
+fn expr_deps(spec: &Value) -> Result<Vec<String>, String> {
+    fn scan_str(s: &str, out: &mut Vec<String>) -> Result<(), String> {
+        let mut rest = s;
+        while let Some(tok) = next_token(rest)? {
+            if let Token::Expr(body, _, end) = tok {
+                let b = body.as_bytes();
+                let mut i = 0;
+                while i + 4 <= b.len() {
+                    if &b[i..i + 4] == b"ref(" {
+                        let mut j = i + 4;
+                        while j < b.len() && b[j].is_ascii_whitespace() {
+                            j += 1;
+                        }
+                        if j < b.len() && (b[j] == b'\'' || b[j] == b'"') {
+                            let q = b[j];
+                            let mut k = j + 1;
+                            while k < b.len() && b[k] != q {
+                                k += 1;
+                            }
+                            if k < b.len() {
+                                out.push(String::from_utf8_lossy(&b[j + 1..k]).into_owned());
+                            }
+                        }
+                        i = j;
+                    } else {
+                        i += 1;
+                    }
+                }
+                rest = &rest[end + 1..];
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+    fn walk(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
+        match v {
+            Value::String(s) => scan_str(s, out),
+            Value::Array(a) => {
+                for x in a {
+                    walk(x, out)?;
+                }
+                Ok(())
+            }
+            Value::Object(o) => {
+                for x in o.values() {
+                    walk(x, out)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    let mut out = Vec::new();
+    walk(spec, &mut out)?;
+    Ok(out)
+}
+
+/// `of`/`from` data sources (chart.of.part, table.from.part) at any depth.
+fn data_deps(spec: &Value) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(o) => {
+                for key in ["of", "from"] {
+                    if let Some(src) = o.get(key).and_then(|x| x.as_object()) {
+                        if let Some(p) = src.get("part").and_then(|x| x.as_str()) {
+                            out.push(p.to_string());
+                        }
+                    }
+                }
+                for x in o.values() {
+                    walk(x, out);
+                }
+            }
+            Value::Array(a) => {
+                for x in a {
+                    walk(x, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(spec, &mut out);
+    out
 }
 
 /// Deterministic seed for a part that doesn't carry its own (SplitMix64 over
@@ -342,7 +563,7 @@ fn derive_seed(bundle_seed: u64, name: &str) -> u64 {
 fn topo_order(parts: &Map<String, Value>) -> Result<Vec<String>, String> {
     let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, p) in parts {
-        let mut ds: Vec<String> = spec_refs(p)?.into_iter().map(|r| r.part).collect();
+        let mut ds: Vec<String> = all_deps(p)?;
         for d in &ds {
             if d == name {
                 return Err(format!("reference cycle: {name} -> {name}"));

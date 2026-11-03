@@ -47,6 +47,8 @@ enum Command {
     Mcp,
     /// Print the stable fingerprint of the MCP tools block (cache-safety guard)
     Fingerprint,
+    /// Estimate the tokens the spec costs vs the artifact it renders (~4 chars/token)
+    Tokens { spec: PathBuf },
 }
 
 /// Binary entry point.
@@ -140,6 +142,31 @@ fn run() -> i32 {
             println!("{}", mcp::tools_fingerprint());
             0
         }
+        Command::Tokens { spec: path } => match load_spec(&path) {
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+            Ok(spec) => {
+                // the honest cheap estimate: ~4 chars per token for English-ish text
+                let spec_json = serde_json::to_string(&spec).unwrap_or_default();
+                match render::render(&spec) {
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        1
+                    }
+                    Ok(artifact) => {
+                        let spec_t = spec_json.len().div_ceil(4);
+                        let art_t = artifact.len().div_ceil(4);
+                        let saved = 100.0 - 100.0 * spec_t as f64 / art_t.max(1) as f64;
+                        println!(
+                            "spec ≈{spec_t} tokens | artifact ≈{art_t} tokens | LLM wrote {saved:.1}% fewer tokens"
+                        );
+                        0
+                    }
+                }
+            }
+        },
     }
 }
 

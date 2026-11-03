@@ -1,0 +1,110 @@
+{
+ "kind": "bundle",
+ "seed": 42,
+ "title": "Algebra demo",
+ "parts": {
+  "orders": {
+   "kind": "records",
+   "n": 600,
+   "seed": 7,
+   "format": "jsonl",
+   "fields": [
+    "id",
+    "name",
+    "category",
+    "price"
+   ],
+   "categories": [
+    "tools",
+    "toys",
+    "books",
+    "food"
+   ],
+   "category_weights": {
+    "tools": 4,
+    "toys": 2,
+    "books": 1,
+    "food": 3
+   },
+   "pools": {
+    "tools": [
+     "Hammer",
+     "Wrench",
+     "Drill"
+    ],
+    "toys": [
+     "Robot",
+     "Kite",
+     "Blocks"
+    ],
+    "books": [
+     "Atlas",
+     "Novel",
+     "Primer"
+    ],
+    "food": [
+     "Bread",
+     "Honey",
+     "Cheese"
+    ]
+   },
+   "price_dist": "lognormal",
+   "price_mean": 42.0,
+   "price_sd": 0.9,
+   "decimals": 2
+  },
+  "kpi": {
+   "kind": "report",
+   "title": "KPI",
+   "sections": [
+    {
+     "heading": "Headline",
+     "bullets": [
+      "Revenue: {ref:part=orders,stat=sum,field=price}.",
+      "Revenue incl. VAT: {expr:ref('orders','sum','price') * 1.2}.",
+      "Mean check with 10% growth target: {expr:round(ref('orders','mean','price') * 1.1 * 100) / 100}.",
+      "VAT burden: {expr:ref('orders','sum','price') * 0.2}.",
+      "Revenue target 2x gap: {expr:2 * ref('orders','sum','price') - ref('orders','sum','price')}."
+     ]
+    }
+   ]
+  },
+  "by_cat": {
+   "kind": "table",
+   "title": "By category",
+   "sort": "value",
+   "from": {
+    "part": "orders",
+    "by": "category",
+    "cols": {
+     "orders": "count",
+     "revenue": "sum:price",
+     "avg check": "mean:price",
+     "best seller": "top:name"
+    }
+   },
+   "sort_by": "revenue"
+  },
+  "chart": {
+   "kind": "chart",
+   "title": "Revenue by category",
+   "chart": "bars",
+   "of": {
+    "part": "orders",
+    "by": "category",
+    "stat": "sum",
+    "field": "price"
+   }
+  },
+  "dist": {
+   "kind": "chart",
+   "title": "Price distribution",
+   "chart": "histogram",
+   "of": {
+    "part": "orders",
+    "field": "price"
+   },
+   "buckets": 8
+  }
+ }
+}

@@ -185,7 +185,7 @@ fn validation_rejects_bad() {
 fn library_entry_points_match_python_surface() {
     assert_eq!(
         spec::kinds(),
-        vec!["bundle", "code", "dataset", "list", "prose", "records", "report", "table"]
+        vec!["bundle", "chart", "code", "dataset", "list", "prose", "records", "report", "table"]
     );
     // same spec -> same artifact across library uses
     let s = template("records");
@@ -424,4 +424,300 @@ fn records_new_options_are_validated() {
         "price_mean": 10, "price_sd": 3
     }))
     .is_empty());
+}
+
+// ------------------------------------------------------------- {expr:...} --
+
+#[test]
+fn expr_eval_precedence_functions_and_refs() {
+    use spec2artifact::expr;
+    let stats = serde_json::json!({});
+    let _ = stats;
+    let lookup = |p: &str, s: &str, f: Option<&str>| -> Result<f64, String> {
+        match (p, s, f) {
+            ("orders", "sum", Some("price")) => Ok(100.0),
+            ("orders", "count", None) => Ok(4.0),
+            _ => Err("no value".into()),
+        }
+    };
+    assert_eq!(expr::eval("1 + 2 * 3", &lookup).unwrap(), 7.0);
+    assert_eq!(expr::eval("(1 + 2) * 3", &lookup).unwrap(), 9.0);
+    assert!(expr::eval("-2^", &lookup).is_err());
+    assert_eq!(expr::eval("2 * -3", &lookup).unwrap(), -6.0);
+    assert_eq!(
+        expr::eval("round(10 / 3 * 100) / 100", &lookup).unwrap(),
+        3.33
+    );
+    assert_eq!(expr::eval("max(1, 5) + min(1, 5)", &lookup).unwrap(), 6.0);
+    assert_eq!(
+        expr::eval("sqrt(9) + clamp(10, 0, 5)", &lookup).unwrap(),
+        8.0
+    );
+    assert_eq!(expr::eval("if(1 > 2, 10, 20)", &lookup).unwrap(), 20.0);
+    assert_eq!(
+        expr::eval("if(ref('orders','count') >= 4, 1, 0)", &lookup).unwrap(),
+        1.0
+    );
+    assert_eq!(
+        expr::eval("ref('orders','sum','price') * 1.2", &lookup).unwrap(),
+        120.0
+    );
+    assert_eq!(expr::eval("1 && 0 || 1", &lookup).unwrap(), 1.0);
+    assert!(expr::eval("!(0)", &lookup).is_err()); // no ! operator — by design
+}
+
+#[test]
+fn expr_errors_are_precise() {
+    use spec2artifact::expr;
+    let lookup = |_p: &str, _s: &str, _f: Option<&str>| -> Result<f64, String> {
+        Err("no value".to_string())
+    };
+    assert!(expr::eval("1 / 0", &lookup)
+        .unwrap_err()
+        .contains("division by zero"));
+    assert!(expr::eval("1 % 0", &lookup).unwrap_err().contains("modulo"));
+    assert!(expr::eval("nope(1)", &lookup)
+        .unwrap_err()
+        .contains("unknown function"));
+    assert!(expr::eval("1 +", &lookup)
+        .unwrap_err()
+        .contains("unexpected end"));
+    assert!(expr::eval("ref('x','sum')", &lookup)
+        .unwrap_err()
+        .contains("no value"));
+    assert!(expr::eval("1 2", &lookup)
+        .unwrap_err()
+        .contains("unexpected"));
+}
+
+#[test]
+fn bundle_resolves_exprs_against_part_stats() {
+    let mut b = template("bundle");
+    b["parts"]["summary"]["sections"][0]["bullets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("VAT: {expr:ref('orders','sum','price') * 1.2}."));
+    b["parts"]["summary"]["sections"][0]["bullets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(
+            "Per order cap: {expr:round(ref('orders','sum','price') / ref('orders','stat_x') )}"
+        ));
+    // drop the deliberately broken second bullet — replaced below by a valid mean one
+    let arr = b["parts"]["summary"]["sections"][0]["bullets"]
+        .as_array_mut()
+        .unwrap();
+    arr.pop();
+    arr.push(json!(
+        "Mean: {expr:ref('orders','sum','price') / ref('orders','count')}."
+    ));
+    let out = render::render(&b).unwrap();
+    let orders = b["parts"]["orders"].clone();
+    let rows: Vec<Value> = render::render(&orders)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    let sum: f64 = rows.iter().map(|r| r["price"].as_f64().unwrap()).sum();
+    let mean = sum / rows.len() as f64;
+    let parse_after = |prefix: &str| -> f64 {
+        out.lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix} missing:\n{out}"))
+            .trim_start_matches(prefix)
+            .trim_end_matches('.')
+            .parse()
+            .expect("numeric expr result")
+    };
+    let vat = parse_after("- VAT: ");
+    assert!((vat - sum * 1.2).abs() < 1e-6, "VAT {vat} vs {}", sum * 1.2);
+    let m = parse_after("- Mean: ");
+    assert!((m - mean).abs() < 1e-6, "mean {m} vs {mean}");
+}
+
+#[test]
+fn bundle_expr_syntax_errors_are_caught_by_validate() {
+    let bad = json!({
+        "kind": "report", "title": "R",
+        "sections": [{"heading": "h", "bullets": ["{expr:1 +}"]}]
+    });
+    let errs = spec::validate(&bad);
+    assert!(errs.iter().any(|e| e.contains("expr")), "{errs:?}");
+    assert!(render::render(&bad).is_err());
+}
+
+// ------------------------------------------------------------------ chart --
+
+#[test]
+fn chart_bars_render_deterministically_descending() {
+    let c = json!({
+        "kind": "chart", "title": "Rev", "chart": "bars",
+        "data": [["a", 10], ["b", 50], ["c", 30]]
+    });
+    let out = render::render(&c).unwrap();
+    assert_eq!(out, render::render(&c).unwrap());
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines[2].starts_with("b │"));
+    assert!(lines[2].contains('█'));
+    assert!(lines[3].starts_with("c │"));
+    assert!(lines[4].starts_with("a │"));
+    assert!(out.contains("50"));
+}
+
+#[test]
+fn chart_histogram_and_sparkline() {
+    let h = json!({
+        "kind": "chart", "chart": "histogram", "buckets": 4, "width": 20,
+        "data": [[1, 1.0], [2, 2.0], [3, 3.0], [4, 4.0], [5, 100.0]]
+    });
+    let out = render::render(&h).unwrap();
+    assert!(out.contains("[1.00,"), "{out}");
+    assert!(
+        out.lines().any(|l| l.ends_with(" 4")),
+        "counts visible: {out}"
+    );
+    assert!(out.lines().any(|l| l.ends_with(" 1")));
+    let s = json!({
+        "kind": "chart", "chart": "sparkline",
+        "data": [[1, 3], [2, 7], [3, 4], [4, 9], [5, 2]]
+    });
+    let out = render::render(&s).unwrap();
+    assert!(out.contains("▂▆▃█▁"), "{out}");
+    assert!(out.contains("min 2, max 9"));
+}
+
+#[test]
+fn chart_of_part_requires_bundle_context() {
+    let c = json!({
+        "kind": "chart", "chart": "bars",
+        "of": {"part": "orders", "by": "category", "stat": "sum", "field": "price"}
+    });
+    let err = render::render(&c).unwrap_err();
+    assert!(err.contains("bundle context"), "{err}");
+}
+
+// ------------------------------------------------------------- table.from --
+
+#[test]
+fn rollup_table_matches_the_data_exactly() {
+    // the crown test: parse the rendered rollup table and check every cell
+    // against an independent computation over the same generated rows
+    let mut b = template("bundle");
+    b["parts"]["by_cat"] = json!({
+        "kind": "table", "title": "By category", "sort": "label",
+        "from": {"part": "orders", "by": "category",
+                 "cols": {"orders": "count", "revenue": "sum:price"}}
+    });
+    let out = render::render(&b).unwrap();
+    let orders = b["parts"]["orders"].clone();
+    let rows: Vec<Value> = render::render(&orders)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .collect();
+    let mut want: std::collections::BTreeMap<String, (u64, f64)> = Default::default();
+    for r in &rows {
+        let e = want
+            .entry(r["category"].as_str().unwrap().to_string())
+            .or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += r["price"].as_f64().unwrap();
+    }
+    for (cat, (count, sum)) in want {
+        let line = out
+            .lines()
+            .find(|l| l.starts_with(&format!("| {cat} ")))
+            .unwrap_or_else(|| panic!("row for {cat} missing in\n{out}"));
+        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+        let cnt: f64 = cells[1].parse().expect("numeric count");
+        let rev: f64 = cells[2].parse().expect("numeric revenue");
+        assert_eq!(cnt, count as f64, "{cat}: count in {line}");
+        assert!((rev - sum).abs() < 1e-6, "{cat}: revenue {rev} vs {sum}");
+    }
+}
+
+#[test]
+fn rollup_table_sorts_by_value() {
+    let t = json!({
+        "kind": "table", "title": "T", "sort": "value", "sort_by": "rev",
+        "from": {"part": "x", "by": "k", "cols": {"rev": "sum:v"}}
+    });
+    // standalone (no ctx) must fail with the bundle-context message
+    let err = render::render(&t).unwrap_err();
+    assert!(err.contains("bundle context"), "{err}");
+}
+
+#[test]
+fn chart_and_rollup_validation() {
+    assert!(!spec::validate(&json!({"kind": "chart", "chart": "pie"})).is_empty());
+    assert!(!spec::validate(&json!({"kind": "chart"})).is_empty());
+    assert!(!spec::validate(&json!({
+        "kind": "chart", "data": [["a", "x"]]
+    }))
+    .is_empty());
+    assert!(!spec::validate(&json!({
+        "kind": "chart", "of": {"part": "x", "by": "k", "stat": "median"}
+    }))
+    .is_empty());
+    assert!(spec::validate(&json!({
+        "kind": "chart", "data": [["a", 1]]
+    }))
+    .is_empty());
+    assert!(!spec::validate(&json!({
+        "kind": "table", "from": {"part": "x", "by": "k", "cols": {"c": "top"}}
+    }))
+    .is_empty());
+    assert!(spec::validate(&json!({
+        "kind": "table", "from": {"part": "x", "by": "k", "cols": {"c": "top:name"}}
+    }))
+    .is_empty());
+    assert!(!spec::validate(&json!({
+        "kind": "table", "from": {"part": "x", "by": "k", "cols": {"c": "sum:v"}},
+        "sort_by": "nope"
+    }))
+    .is_empty());
+}
+
+#[test]
+fn bundle_cycle_through_expr_and_chart_source() {
+    // a chart sourcing a part that expr-references the chart's sibling — topo must order it
+    let spec = json!({
+        "kind": "bundle",
+        "parts": {
+            "data": {"kind": "table", "title": "D", "columns": ["k"], "rows": [["{ref:part=head,stat=count}"]]},
+            "head": {"kind": "table", "title": "H", "columns": ["k"], "rows": [["{ref:part=data,stat=count}"]]}
+        }
+    });
+    let errs = spec::validate(&spec);
+    assert!(
+        errs.iter().any(|e| e.contains("reference cycle")),
+        "{errs:?}"
+    );
+    assert!(render::render(&spec).is_err());
+}
+
+#[test]
+fn standalone_exprs_work_without_a_bundle() {
+    let r = json!({
+        "kind": "report", "title": "Quote",
+        "sections": [{"heading": "h", "bullets": [
+            "List: {expr:99 * 3}.",
+            "Bulk: {expr:99 * 3 * 0.9}.",
+            "Cap: {expr:min(99 * 3 * 0.9, 250)}."
+        ]}]
+    });
+    let out = render::render(&r).unwrap();
+    assert!(out.contains("List: 297."), "{out}");
+    assert!(out.contains("Bulk: 267.3."), "{out}");
+    assert!(out.contains("Cap: 250."), "{out}");
+}
+
+#[test]
+fn standalone_refs_fail_with_a_clear_message() {
+    let r = json!({
+        "kind": "report", "title": "R",
+        "sections": [{"heading": "h", "bullets": ["{ref:part=x,stat=count}"]}]
+    });
+    let err = render::render(&r).unwrap_err();
+    assert!(err.contains("needs a bundle data context"), "{err}");
 }
