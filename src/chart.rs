@@ -21,6 +21,12 @@ pub fn render_chart(spec: &Value, ctx: Option<&Ctx>) -> Result<String, String> {
         .clamp(8, 200);
     let body = match kind {
         "bars" => bars(&grouping, width),
+        "line" => {
+            let height = usize::try_from(spec.get("height").and_then(|v| v.as_u64()).unwrap_or(12))
+                .unwrap_or(12)
+                .clamp(3, 60);
+            line(&grouping, width, height)
+        }
         "histogram" => {
             let buckets =
                 usize::try_from(spec.get("buckets").and_then(|v| v.as_u64()).unwrap_or(10))
@@ -31,7 +37,7 @@ pub fn render_chart(spec: &Value, ctx: Option<&Ctx>) -> Result<String, String> {
         "sparkline" => sparkline(&grouping),
         other => {
             return Err(format!(
-                "chart must be bars|histogram|sparkline, got {other:?}"
+                "chart must be bars|line|histogram|sparkline, got {other:?}"
             ))
         }
     };
@@ -85,7 +91,7 @@ fn grouping(spec: &Value, ctx: Option<&Ctx>) -> Result<Grouping, String> {
             )
         })?;
     let chart_kind = spec.get("chart").and_then(|v| v.as_str()).unwrap_or("bars");
-    if chart_kind == "histogram" || chart_kind == "sparkline" {
+    if chart_kind == "histogram" || chart_kind == "sparkline" || chart_kind == "line" {
         // raw sequence over one numeric field (no grouping)
         let field = of
             .get("field")
@@ -123,6 +129,76 @@ fn grouping(spec: &Value, ctx: Option<&Ctx>) -> Result<Grouping, String> {
         return rollup::top_per_group(rows, by, agg_field.as_deref().unwrap_or_default());
     }
     rollup::group_rows(rows, by, &agg, &agg_field)
+}
+
+/// Unicode line chart: Bresenham segments ('·') with points ('●').
+/// X comes from numeric labels when every label parses, else 1..n.
+fn line(g: &Grouping, width: usize, height: usize) -> Vec<String> {
+    let xs: Vec<f64> = if g.labels.iter().all(|l| l.parse::<f64>().is_ok()) {
+        g.labels.iter().map(|l| l.parse::<f64>().unwrap()).collect()
+    } else {
+        (1..=g.values.len()).map(|i| i as f64).collect()
+    };
+    let lo = g.values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let hi = g.values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let xlo = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let xhi = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let map = |x: f64, y: f64| -> (usize, usize) {
+        let col = if xhi == xlo {
+            0
+        } else {
+            ((x - xlo) / (xhi - xlo) * (width as f64 - 1.0)).round() as usize
+        };
+        let row = if hi == lo {
+            height / 2
+        } else {
+            ((hi - y) / (hi - lo) * (height as f64 - 1.0)).round() as usize
+        };
+        (col.min(width - 1), row.min(height - 1))
+    };
+    let mut canvas = vec![vec![' '; width]; height];
+    for pair in xs
+        .iter()
+        .zip(g.values.iter())
+        .collect::<Vec<_>>()
+        .windows(2)
+    {
+        let (x0, y0) = map(*pair[0].0, *pair[0].1);
+        let (x1, y1) = map(*pair[1].0, *pair[1].1);
+        // Bresenham
+        let (mut cx, mut cy) = (x0 as isize, y0 as isize);
+        let (dx, dy) = ((x1 as isize - cx).abs(), -(y1 as isize - cy).abs());
+        let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
+        let mut err = dx + dy;
+        loop {
+            if (cx, cy) != (x1 as isize, y1 as isize) {
+                canvas[cy as usize][cx as usize] = '·';
+            }
+            if cx == x1 as isize && cy == y1 as isize {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                cx += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                cy += sy;
+            }
+        }
+    }
+    for (x, y) in xs.iter().zip(g.values.iter()) {
+        let (col, row) = map(*x, *y);
+        canvas[row][col] = '●';
+    }
+    let mut out: Vec<String> = canvas.iter().map(|r| r.iter().collect()).collect();
+    out.push(format!(
+        "  (min {lo}, max {hi}, n {}; x: {xlo} → {xhi})",
+        g.values.len()
+    ));
+    out.push(String::new());
+    out
 }
 
 fn bars(g: &Grouping, width: usize) -> Vec<String> {

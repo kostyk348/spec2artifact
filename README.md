@@ -9,7 +9,7 @@ structured artifact — data, reports, tables, code scaffolds — for 0 LLM toke
 
 [![Release](https://img.shields.io/github/v/release/kostyk348/spec2artifact?sort=semver&color=0ea5e9&label=release)](https://github.com/kostyk348/spec2artifact/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/kostyk348/spec2artifact/ci.yml?branch=master&label=CI)](https://github.com/kostyk348/spec2artifact/actions/workflows/ci.yml)
-[![tests](https://img.shields.io/badge/tests-43%20passing-22c55e)](#development)
+[![tests](https://img.shields.io/badge/tests-52%20passing-22c55e)](#development)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
@@ -42,7 +42,9 @@ with the task kind, and the renderer is exact by construction.
 
 | kind | what the LLM fills | what the renderer produces |
 |---|---|---|
-| `chart` | chart type + inline data, or an `of` source inside a bundle | a deterministic Unicode chart (bars / histogram / sparkline) |
+| `chart` | chart type + inline data, or an `of` source inside a bundle | a deterministic Unicode chart (bars / line / histogram / sparkline) |
+| `map` | variant + seed + dimensions (+ biome names) | a seeded procedural map: terrain / dungeon / maze, with an exact legend |
+| `tree` | nested labels | a Unicode box-drawing tree (├── └──) |
 | `bundle` | named parts (any kinds below) + `{ref:...}` placeholders | a multi-part artifact, **self-consistent by construction** |
 | `records` | n, seed, categories + name pools, ranges, distributions | n records (jsonl / csv / json) |
 | `report` | title, sections, bullets | Markdown |
@@ -79,6 +81,40 @@ the data, so prose and data cannot disagree.** Hallucinated inconsistency is
 impossible by construction. Example: `examples/bundle_report.{json,md}` — a
 ~160-token spec renders a 600-order dataset plus a summary that cites its
 exact totals (8.8k output tokens, 0 of them LLM-written).
+
+## For games, for code, for everything
+
+**`map`** — seeded procedural worlds in game artifacts. Three variants, all
+locked to the spec's seed: `terrain` (two-octave value noise classified into
+five biomes), `dungeon` (non-overlapping rooms joined by L corridors) and
+`maze` (a *perfect* maze — every cell reachable, exactly one path between any
+two). Each body ends with a legend whose counts are computed from the
+rendered grid, so the picture and its legend cannot disagree:
+
+```
+█████████████████████
+█         █         █
+█████████ █████ █ █ █
+█       █     █ █ █ █      █ wall — perfect maze: every cell reachable,
+█ ███████████ ███ █ █      single component, 79 open cells
+```
+
+**`tree`** — project layouts, org charts and tech trees drawn in exact
+box-drawing characters (`├── └── │`), nested labels in, deterministic art out.
+
+**`chart: line`** — time series join bars, histograms and sparklines:
+Bresenham segments with `●` markers, from inline `[x, y]` pairs or another
+part's rows.
+
+Two showcase bundles prove the range:
+
+- `examples/game_world.json` — a dungeon starter kit: a seeded catacomb map,
+  400 weighted loot rolls, a rarity pivot, an economy sheet whose figures are
+  expressions over the same rows, and two charts. **649 spec tokens → 14 754
+  artifact tokens (95.6% written by nobody).**
+- `examples/project_skeleton.json` — a kickoff artifact for a new repo:
+  repository tree, the core module's API, a milestone roadmap, a velocity
+  line chart and a standup template.
 
 ## The algebra: `{expr:...}` — the artifact computes itself
 
@@ -204,7 +240,7 @@ same spec, different (but equally deterministic) stream.
 ```bash
 cargo fmt --check                          # formatting
 cargo clippy --all-targets -- -D warnings  # lints, zero tolerance
-cargo test                                 # 43 tests: renderers, validation, CLI, MCP over stdio
+cargo test                                 # 52 tests: renderers, validation, CLI, MCP over stdio
 cargo build --release                      # the binary
 ```
 

@@ -1,0 +1,105 @@
+{
+ "kind": "bundle",
+ "seed": 2026,
+ "title": "Emberdeep — dungeon starter kit (design artifact)",
+ "parts": {
+  "level": {
+   "kind": "map",
+   "title": "Level 1 — Emberdeep Catacombs",
+   "variant": "dungeon",
+   "seed": 7,
+   "w": 48,
+   "h": 18,
+   "rooms": 7
+  },
+  "loot": {
+   "kind": "records",
+   "n": 400,
+   "seed": 11,
+   "format": "jsonl",
+   
+   "categories": ["common", "uncommon", "rare", "epic"],
+   "category_weights": {"common": 60, "uncommon": 25, "rare": 12, "epic": 3},
+   "pools": {
+    "common": ["Rusty Dagger", "Torn Cloak", "Bread Heel", "Cracked Shield"],
+    "uncommon": ["Steel Shortsword", "Traveler's Amulet", "Healing Draught"],
+    "rare": ["Emberbrand Blade", "Wardweave Robe", "Soul Sapphire"],
+    "epic": ["Crown of the Deep", "Ashen Reaver", "Heartflame Sigil"]
+   },
+   "price_dist": "lognormal",
+   "price_mean": 20.0,
+   "price_sd": 0.8,
+   "decimals": 2
+  },
+  "economy": {
+   "kind": "report",
+   "title": "Economy sheet",
+   "sections": [
+    {
+     "heading": "Loot economy (400 rolls)",
+     "bullets": [
+      "Total market value: {ref:part=loot,stat=sum,field=price}.",
+      "Value incl. 15% vendor tax: {expr:round(ref('loot','sum','price') * 1.15 * 100) / 100}.",
+      "Mean item price: {ref:part=loot,stat=mean,field=price}; priciest drop: {ref:part=loot,stat=max,field=price}.",
+      "Expected value per 100 pulls: {expr:round(ref('loot','sum','price') / ref('loot','count') * 100)}.",
+      "A typical pull is worth {expr:round(ref('loot','mean','price') * 10) / 10} — budget drops to keep the dungeon profitable."
+     ]
+    }
+   ]
+  },
+  "rarity_chart": {
+   "kind": "chart",
+   "title": "Drops by rarity",
+   "chart": "bars",
+   "width": 44,
+   "of": {"part": "loot", "by": "category", "stat": "count"}
+  },
+  "rarity_pivot": {
+   "kind": "table",
+   "title": "Rarity ledger",
+   "sort": "value",
+   "sort_by": "market value",
+   "from": {
+    "part": "loot",
+    "by": "category",
+    "cols": {
+     "drops": "count",
+     "market value": "sum:price",
+     "avg price": "mean:price",
+     "signature item": "top:name"
+    }
+   }
+  },
+  "distribution": {
+   "kind": "chart",
+   "title": "Item price spread",
+   "chart": "histogram",
+   "width": 40,
+   "buckets": 8,
+   "of": {"part": "loot", "field": "price"}
+  },
+  "how_to_read": {
+   "kind": "prose",
+   "title": "How to read this artifact",
+   "tone": "casual",
+   "seed": 3,
+   "paragraphs": [
+    {
+     "topic": "the dungeon map",
+     "points": [
+      "the map is procedural but locked to seed 7: every reviewer and every future regeneration sees the same seven rooms",
+      "rooms sit in the north-east and south-west, so patrol routes cross the central corridor twice"
+     ]
+    },
+    {
+     "topic": "the loot tables",
+     "points": [
+      "weights make epics about 3% of drops, and the ledger above lists the exact drop counts this seed produces",
+      "the economy sheet derives its numbers from the same 400 generated rows, so tuning a weight regenerates every figure"
+     ]
+    }
+   ],
+   "footer": "Rendered by spec2artifact — the map, the ledger and the prose cite the same data by construction."
+  }
+ }
+}
